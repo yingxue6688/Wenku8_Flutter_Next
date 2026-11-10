@@ -1,0 +1,168 @@
+name: Build Android APKs
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.41.5'
+          channel: stable
+          cache: true
+      - name: Read version and notes
+        id: release
+        env:
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: |
+          args=()
+          if [[ -n "$RELEASE_TAG" ]]; then args+=(--tag "$RELEASE_TAG"); fi
+          python3 tools/prepare_release.py "${args[@]}" --github-output "$GITHUB_OUTPUT" --notes build/release-notes.md
+      - name: Configure signing
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          TAG_BUILD: ${{ github.ref_type == 'tag' }}
+        run: |
+          python3 - <<'PY'
+          import base64, os
+          from pathlib import Path
+          keys = ['KEYSTORE_BASE64', 'KEY_ALIAS', 'KEY_PASSWORD', 'STORE_PASSWORD']
+          supplied = [bool(os.environ.get(key)) for key in keys]
+          if any(supplied) and not all(supplied):
+              raise SystemExit('Configure all four ANDROID signing secrets together.')
+          if not all(supplied):
+              if os.environ['TAG_BUILD'] == 'true':
+                  raise SystemExit('Tag releases require a persistent signing key. See docs/RELEASING.md.')
+              print('Manual preview: temporary runner debug signature, not an upgrade release.')
+          else:
+              store = Path(os.environ['RUNNER_TEMP']) / 'wenku8-release.jks'
+              store.write_bytes(base64.b64decode(os.environ['KEYSTORE_BASE64'], validate=True))
+              store.chmod(0o600)
+              def escape(text):
+                  return text.replace('\\', '\\\\').replace('\n', '\\n').replace('\r', '\\r').replace('=', '\\=').replace(':', '\\:').replace(' ', '\\ ')
+              values = {'storeFile': str(store), 'storePassword': os.environ['STORE_PASSWORD'],
+                        'keyAlias': os.environ['KEY_ALIAS'], 'keyPassword': os.environ['KEY_PASSWORD']}
+              Path('android/key.properties').write_text(''.join(f'{key}={escape(value)}\n' for key, value in values.items()))
+          PY
+      - run: flutter pub get
+      - run: flutter analyze --no-fatal-infos --no-fatal-warnings
+      - run: flutter test test/epub_rich_layout_test.dart
+      - name: Prepare Gradle dependencies
+        run: |
+          curl --fail --location --silent --show-error --retry 3 --retry-all-errors \
+            --header 'Accept: application/octet-stream' \
+            https://api.github.com/repos/gradle/gradle-distributions/releases/assets/249401401 \
+            --output "$RUNNER_TEMP/gradle-8.14-bin.zip"
+          echo "61ad310d3c7d3e5da131b76bbf22b5a4c0786e9d892dae8c1658d4b484de3caa  $RUNNER_TEMP/gradle-8.14-bin.zip" | sha256sum --check
+          for entry in \
+            '2.0.21 587823233 9fa8cdd1de0dccffe154c997d423ec6b5f53cd6d9177e3a77a9b0de03fb1bc81' \
+            '2.2.20 587886256 1c6c3f810bfe6a41abcbc34b3a2ef639f1e3f4aeed3a953a4b0974eea4f41889'; do
+            read -r version asset digest <<< "$entry"
+            kotlin_dir="$RUNNER_TEMP/gradle-mirror/org/jetbrains/kotlin/kotlin-compiler-embeddable/$version"
+            mkdir -p "$kotlin_dir"
+            curl --fail --location --silent --show-error --retry 3 --retry-all-errors \
+              --header 'Accept: application/octet-stream' \
+              "https://api.github.com/repos/JetBrains/kotlin/releases/assets/$asset" \
+              --output "$kotlin_dir/kotlin-compiler-embeddable-$version.jar"
+            echo "$digest  $kotlin_dir/kotlin-compiler-embeddable-$version.jar" | sha256sum --check
+            curl --fail --location --silent --show-error --retry 3 --retry-all-errors \
+              "https://repo.maven.apache.org/maven2/org/jetbrains/kotlin/kotlin-compiler-embeddable/$version/kotlin-compiler-embeddable-$version.pom" \
+              --output "$kotlin_dir/kotlin-compiler-embeddable-$version.pom"
+          done
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          wrapper = Path('android/gradle/wrapper/gradle-wrapper.properties')
+          lines = wrapper.read_text().splitlines()
+          if not any(line.startswith('distributionUrl=') for line in lines):
+              raise SystemExit('Gradle wrapper distributionUrl is missing')
+          zip_url = (Path(os.environ['RUNNER_TEMP']) / 'gradle-8.14-bin.zip').as_uri()
+          wrapper.write_text('\n'.join(
+              f'distributionUrl={zip_url}' if line.startswith('distributionUrl=') else line
+              for line in lines
+          ) + '\n')
+
+          flutter_settings = Path(os.environ['FLUTTER_ROOT']) / 'packages/flutter_tools/gradle/settings.gradle.kts'
+          mirror = (Path(os.environ['RUNNER_TEMP']) / 'gradle-mirror').as_uri()
+          settings = flutter_settings.read_text()
+          repository_block = 'repositories {\n        google()'
+          if repository_block not in settings:
+              raise SystemExit('Flutter Gradle repository block changed')
+          settings = settings.replace(
+              repository_block,
+              f'repositories {{\n        maven {{ url = uri("{mirror}") }}\n        google()',
+              1,
+          )
+          flutter_settings.write_text(
+              f'pluginManagement {{ repositories {{ maven {{ url = uri("{mirror}") }}; '
+              'mavenCentral(); gradlePluginPortal() } }\n' + settings
+          )
+
+          root_build = Path('android/build.gradle.kts')
+          root_settings = root_build.read_text()
+          if repository_block not in root_settings:
+              raise SystemExit('Android Gradle repository block changed')
+          root_build.write_text(root_settings.replace(
+              repository_block,
+              f'repositories {{\n        maven {{ url = uri("{mirror}") }}\n        google()',
+              1,
+          ))
+          PY
+      - name: Build all supported Android architectures
+        env:
+          UPDATE_REPOSITORY: ${{ github.repository }}
+          VERSION: ${{ steps.release.outputs.version }}
+        # Separate one-ABI builds keep the same versionCode on every device.
+        # Flutter split-per-abi adds ABI offsets that break build-only updates.
+        run: |
+          mkdir -p build/release-assets
+          for entry in 'android-arm armeabi-v7a' 'android-arm64 arm64-v8a' 'android-x64 x86_64'; do
+            read -r target abi <<< "$entry"
+            flutter build apk --release --target-platform "$target" --dart-define="UPDATE_REPOSITORY=$UPDATE_REPOSITORY"
+            cp build/app/outputs/flutter-apk/app-release.apk "build/release-assets/wenku8-$VERSION-$abi.apk"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wenku8-${{ steps.release.outputs.version }}-android
+          path: |
+            build/release-assets/*
+            build/release-notes.md
+          if-no-files-found: error
+          retention-days: 14
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.release.outputs.version }}
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}', steps.release.outputs.version) }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" build/release-assets/* --clobber
+            gh release edit "$RELEASE_TAG" --draft=false --target "${{ github.sha }}" --title "轻小说文库 Next $RELEASE_TAG" --notes-file build/release-notes.md
+          else
+            gh release create "$RELEASE_TAG" build/release-assets/* --title "轻小说文库 Next $RELEASE_TAG" --notes-file build/release-notes.md
+          fi
+      - name: Remove runner signing material
+        if: always()
+        run: rm -f android/key.properties "$RUNNER_TEMP/wenku8-release.jks"
