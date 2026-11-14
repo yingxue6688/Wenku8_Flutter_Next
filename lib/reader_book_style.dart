@@ -59,6 +59,8 @@ class ReaderBookStyle {
 
   static const _layoutKeys = {
     'paper',
+    'customPalettes',
+    'customPaletteId',
     'mode',
     'verticalLatinOrientation',
     'margin',

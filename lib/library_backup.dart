@@ -462,7 +462,8 @@ bool _validLocalImportOptions(Object? value) {
 }
 
 bool _validReaderPreferences(Object? value) {
-  if (value is! String || value.length > 4096) return false;
+  // Reader preferences may include up to 100 named custom palettes.
+  if (value is! String || value.length > 32768) return false;
   try {
     ReaderPreferences.fromJson(jsonDecode(value));
     return true;

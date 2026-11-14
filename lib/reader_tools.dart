@@ -14,6 +14,7 @@ import 'reader_annotation_editor.dart';
 import 'reader_bookmark_excerpt.dart';
 import 'local_platform.dart';
 import 'reader_preferences.dart';
+import 'reader_palette_editor.dart';
 import 'font_settings_page.dart';
 import 'glass_choices.dart';
 import 'setting_menu.dart';
@@ -462,6 +463,144 @@ class _ReaderToolsState extends State<ReaderTools>
   String? _storageError;
   Key? _activeAdjustment;
   String _marginEdge = '左右';
+
+  Future<void> _editPalette([ReaderCustomPalette? palette]) async {
+    final preferences = _readerPreferences;
+    if (palette == null &&
+        preferences.customPalettes.length >= maximumReaderCustomPalettes) {
+      return;
+    }
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final result = await showJellySheet<ReaderCustomPalette>(
+      context: context,
+      reduceMotion: widget.state.effectiveReduceMotion,
+      guardDragDismiss: true,
+      heightFactor: .9,
+      builder: (_) => ReaderPaletteEditor(
+        initial:
+            palette ??
+            ReaderCustomPalette(
+              id: 'palette-${DateTime.now().microsecondsSinceEpoch}',
+              name: '自定义配色 ${preferences.customPalettes.length + 1}',
+              background: preferences.background(dark),
+              foreground: preferences.foreground(dark),
+            ),
+      ),
+    );
+    if (!mounted || result == null) return;
+    final current = _readerPreferences;
+    _preferences(
+      current.copyWith(
+        paper: ReaderPaper.custom,
+        customPaletteId: result.id,
+        customPalettes: [
+          for (final entry in current.customPalettes)
+            if (entry.id == result.id) result else entry,
+          if (!current.customPalettes.any((entry) => entry.id == result.id))
+            result,
+        ],
+      ),
+    );
+  }
+
+  Future<void> _deletePalette(ReaderCustomPalette palette) async {
+    if (!await confirmNovelAction(
+          context,
+          title: '删除「${palette.name}」？',
+          message: '删除后切换到其他配色；没有自定义配色时恢复奶白。',
+          confirmLabel: '删除配色',
+          reduceMotion: widget.state.effectiveReduceMotion,
+        ) ||
+        !mounted) {
+      return;
+    }
+    final current = _readerPreferences;
+    final remaining = current.customPalettes
+        .where((entry) => entry.id != palette.id)
+        .toList();
+    final removedSelection = current.customPalette?.id == palette.id;
+    _preferences(
+      current.copyWith(
+        paper: remaining.isEmpty && current.paper == ReaderPaper.custom
+            ? ReaderPaper.milk
+            : current.paper,
+        customPalettes: remaining,
+        customPaletteId: removedSelection && remaining.isNotEmpty
+            ? remaining.first.id
+            : current.customPaletteId,
+        clearCustomPalette: remaining.isEmpty,
+      ),
+    );
+  }
+
+  Widget _customPaletteOptions() {
+    final preferences = _readerPreferences;
+    final selected = preferences.customPalette;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        GlassChoiceGroup<String>(
+          name: 'reader-custom-palette',
+          label: '自定义配色',
+          value: selected?.id ?? '',
+          options: {
+            for (final palette in preferences.customPalettes)
+              palette.id: palette.name,
+          },
+          leading: (id) {
+            final palette = preferences.customPalettes.firstWhere(
+              (p) => p.id == id,
+            );
+            return Container(
+              width: 32,
+              height: 32,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: palette.background,
+                borderRadius: BorderRadius.circular(4),
+                border: Border.all(
+                  color: Theme.of(context).colorScheme.outlineVariant,
+                ),
+              ),
+              child: Text(
+                '文',
+                style: TextStyle(color: palette.foreground, fontSize: 16),
+              ),
+            );
+          },
+          onChanged: (id) =>
+              _preferences(preferences.copyWith(customPaletteId: id)),
+        ),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 8,
+          children: [
+            GlassTextButton(
+              key: const ValueKey('reader-palette-add'),
+              onPressed:
+                  preferences.customPalettes.length >=
+                      maximumReaderCustomPalettes
+                  ? null
+                  : () => _editPalette(),
+              child: const AppText('新增配色'),
+            ),
+            if (selected != null) ...[
+              GlassTextButton(
+                key: const ValueKey('reader-palette-edit'),
+                onPressed: () => _editPalette(selected),
+                child: const AppText('编辑配色'),
+              ),
+              GlassTextButton(
+                key: const ValueKey('reader-palette-delete'),
+                onPressed: () => _deletePalette(selected),
+                child: const AppText('删除配色'),
+              ),
+            ],
+          ],
+        ),
+      ],
+    );
+  }
 
   void _toggleBackgrounds() {
     setState(() {
@@ -1322,12 +1461,22 @@ class _ReaderToolsState extends State<ReaderTools>
                 name: 'reader-paper',
                 label: '阅读配色',
                 value: _readerPreferences.paper,
+                customPaperColor: _readerPreferences.customPalette?.background,
                 options: {
                   for (final paper in ReaderPaper.values) paper: paper.label,
                 },
-                onChanged: (paper) =>
-                    _preferences(_readerPreferences.copyWith(paper: paper)),
+                onChanged: (paper) {
+                  if (paper == ReaderPaper.custom &&
+                      _readerPreferences.customPalettes.isEmpty) {
+                    _editPalette();
+                  } else {
+                    _preferences(_readerPreferences.copyWith(paper: paper));
+                  }
+                },
               ),
+            if (category == 'theme' &&
+                _readerPreferences.paper == ReaderPaper.custom)
+              _customPaletteOptions(),
           ],
         ),
       ),
@@ -1366,9 +1515,11 @@ class _ReaderToolsState extends State<ReaderTools>
       ),
     if (category == 'theme')
       AnimatedOptionSection(
-        expanded: _readerPreferences.darkPaper(
-          Theme.of(context).brightness == Brightness.dark,
-        ),
+        expanded:
+            _readerPreferences.paper != ReaderPaper.custom &&
+            _readerPreferences.darkPaper(
+              Theme.of(context).brightness == Brightness.dark,
+            ),
         child: _adjustment(
           ReaderValueSlider(
             sliderKey: const ValueKey('reader-night-text-brightness'),
@@ -2187,11 +2338,13 @@ class ReaderChoicePicker<T extends Enum> extends StatelessWidget {
     required this.value,
     required this.options,
     required this.onChanged,
+    this.customPaperColor,
   });
   final String name, label;
   final T value;
   final Map<T, String> options;
   final ValueChanged<T> onChanged;
+  final Color? customPaperColor;
   @override
   Widget build(BuildContext context) => GlassChoiceGroup<T>(
     name: name,
@@ -2210,7 +2363,9 @@ class ReaderChoicePicker<T extends Enum> extends StatelessWidget {
               width: 16,
               height: 16,
               decoration: BoxDecoration(
-                color: ReaderPreferences(paper: paper).background(dark),
+                color: paper == ReaderPaper.custom && customPaperColor != null
+                    ? customPaperColor
+                    : ReaderPreferences(paper: paper).background(dark),
                 shape: BoxShape.circle,
                 border: Border.all(
                   color: Theme.of(context).colorScheme.outlineVariant,

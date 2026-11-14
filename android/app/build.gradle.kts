@@ -61,6 +61,7 @@ android {
             proguardFile(file("document-import.pro"))
             if (readerPreview) {
                 applicationIdSuffix = ".reader_preview"
+                manifestPlaceholders["wenkuAppLabel"] = "轻小说文库 预览"
             }
             // Local previews remain install-compatible. Public distributions
             // use an owner's untracked key.properties, never an embedded key.

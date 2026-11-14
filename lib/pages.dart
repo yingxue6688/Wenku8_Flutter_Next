@@ -10136,14 +10136,16 @@ class _ReaderPageState extends State<ReaderPage>
   void _toggleNightReading() {
     setState(() => _nightIconActivation++);
     final preferences = _readerPreferences;
-    final dark = preferences.darkPaper(
-      Theme.of(context).brightness == Brightness.dark,
-    );
+    final appDark = Theme.of(context).brightness == Brightness.dark;
+    final dark = preferences.darkPaper(appDark);
     if (!dark) _dayPaper = preferences.paper;
+    var dayPaper = _dayPaper ?? ReaderPaper.milk;
+    // A saved custom daytime palette may have been edited to a dark color.
+    if (preferences.copyWith(paper: dayPaper).darkPaper(appDark)) {
+      dayPaper = ReaderPaper.milk;
+    }
     _applyReaderPreferences(
-      preferences.copyWith(
-        paper: dark ? _dayPaper ?? ReaderPaper.milk : ReaderPaper.night,
-      ),
+      preferences.copyWith(paper: dark ? dayPaper : ReaderPaper.night),
       true,
     );
   }
@@ -11223,6 +11225,7 @@ class _ReaderPageState extends State<ReaderPage>
             final rowSpec = (
               _contentGeneration,
               paragraphStyle,
+              prefs.background(dark),
               prefs.indent,
               prefs.justify,
               prefs.paragraphGap,
@@ -11277,6 +11280,7 @@ class _ReaderPageState extends State<ReaderPage>
                 pageBuilderKey: (
                   display.content,
                   paragraphStyle,
+                  prefs.background(dark),
                   prefs.indent,
                   prefs.justify,
                   prefs.paragraphGap,

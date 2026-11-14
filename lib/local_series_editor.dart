@@ -43,7 +43,19 @@ class _LocalSeriesEditorState extends State<LocalSeriesEditor> {
   final _order = <int>[];
   LocalBookSeries? _series;
   bool _busy = false;
+  bool _closing = false, _askingToClose = false;
+  late final int? _initialSeriesId;
+  late final String _initialTitle;
+  late final List<(int, String)> _initialVolumes;
   String? _error;
+
+  bool get _dirty =>
+      _series?.id != _initialSeriesId ||
+      _title.text.trim() != _initialTitle ||
+      _order.length != _initialVolumes.length ||
+      _order.indexed.any(
+        (entry) => (entry.$2, _label(entry.$2)) != _initialVolumes[entry.$1],
+      );
 
   @override
   void initState() {
@@ -57,6 +69,38 @@ class _LocalSeriesEditorState extends State<LocalSeriesEditor> {
               .firstOrNull
         : null;
     _configure(current ?? suggested, related: related);
+    _initialSeriesId = _series?.id;
+    _initialTitle = _title.text.trim();
+    _initialVolumes = [for (final id in _order) (id, _label(id))];
+    _title.addListener(_edited);
+  }
+
+  void _edited() {
+    if (mounted) setState(() => _error = null);
+  }
+
+  Future<void> _close() async {
+    if (_busy || _closing || _askingToClose) return;
+    if (_dirty) {
+      _askingToClose = true;
+      final discard = await confirmNovelAction(
+        context,
+        title: '放弃未保存的分卷配置？',
+        message: '当前修改尚未保存，返回后将丢失这些修改。',
+        confirmLabel: '放弃修改',
+        reduceMotion: widget.library.reduceMotion,
+      );
+      _askingToClose = false;
+      if (!discard) return;
+    }
+    if (mounted) _finish();
+  }
+
+  void _finish([LocalSeriesEditResult? result]) {
+    setState(() => _closing = true);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) Navigator.pop(context, result);
+    });
   }
 
   String _label(int id) => _labels.putIfAbsent(
@@ -194,8 +238,7 @@ class _LocalSeriesEditorState extends State<LocalSeriesEditor> {
         await groups.assign(book.id, groups.groupOf(_order.first));
       }
       if (mounted) {
-        Navigator.pop(
-          context,
+        _finish(
           LocalSeriesEditResult(bookId: book?.id, dissolved: book == null),
         );
       }
@@ -238,7 +281,7 @@ class _LocalSeriesEditorState extends State<LocalSeriesEditor> {
         series: series,
       );
       if (mounted) {
-        Navigator.pop(context, const LocalSeriesEditResult(dissolved: true));
+        _finish(const LocalSeriesEditResult(dissolved: true));
       }
     } catch (e) {
       if (mounted) {
@@ -488,11 +531,14 @@ class _LocalSeriesEditorState extends State<LocalSeriesEditor> {
 
   @override
   Widget build(BuildContext context) => PopScope<LocalSeriesEditResult>(
-    canPop: !_busy,
+    canPop: _closing || !_busy && !_dirty,
+    onPopInvokedWithResult: (didPop, result) {
+      if (!didPop) _close();
+    },
     child: LocalBookEditLayout(
       title: _series == null ? '合并分卷' : '管理分卷',
       code: 'LOCAL / VOLUMES',
-      onBack: _busy ? null : () => Navigator.maybePop(context),
+      onBack: _busy ? null : _close,
       primaryKey: const ValueKey('series-save'),
       primaryLabel: _busy
           ? '正在保存'

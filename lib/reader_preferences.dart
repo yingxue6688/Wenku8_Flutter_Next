@@ -5,16 +5,82 @@ import 'personal_images.dart' show validBackgroundId;
 
 const minimumReaderFontSize = 10.0;
 const maximumReaderFontSize = 27.0;
+const maximumReaderCustomPalettes = 100;
+const maximumReaderCustomPaletteNameLength = 40;
 
 enum ReaderPaper {
   system('跟随外观'),
   milk('奶白'),
   parchment('羊皮纸'),
   sage('浅苔'),
-  night('夜读');
+  night('夜读'),
+  custom('自定义');
 
   const ReaderPaper(this.label);
   final String label;
+}
+
+bool _validReaderCustomPaletteId(Object? value) =>
+    value is String &&
+    value.isNotEmpty &&
+    value.length <= 80 &&
+    !RegExp(r'[^A-Za-z0-9_-]').hasMatch(value);
+
+@immutable
+class ReaderCustomPalette {
+  const ReaderCustomPalette({
+    required this.id,
+    required this.name,
+    required this.background,
+    required this.foreground,
+  });
+
+  final String id, name;
+  final Color background, foreground;
+
+  ReaderCustomPalette copyWith({
+    String? id,
+    String? name,
+    Color? background,
+    Color? foreground,
+  }) => ReaderCustomPalette(
+    id: id ?? this.id,
+    name: name ?? this.name,
+    background: background ?? this.background,
+    foreground: foreground ?? this.foreground,
+  );
+
+  Map<String, Object> toJson() => {
+    'id': id,
+    'name': name,
+    'background': background.toARGB32(),
+    'foreground': foreground.toARGB32(),
+  };
+
+  factory ReaderCustomPalette.fromJson(Map<String, dynamic> json) {
+    final id = json['id'], name = json['name'];
+    if (!_validReaderCustomPaletteId(id) ||
+        name is! String ||
+        name.trim().isEmpty ||
+        name.length > maximumReaderCustomPaletteNameLength ||
+        RegExp(r'[\x00-\x1f\x7f]').hasMatch(name)) {
+      throw const FormatException('自定义阅读配色名称或标识有误');
+    }
+    Color color(String key) {
+      final value = json[key];
+      if (value is! int || value < 0xFF000000 || value > 0xFFFFFFFF) {
+        throw const FormatException('自定义阅读配色必须是不透明颜色');
+      }
+      return Color(value);
+    }
+
+    return ReaderCustomPalette(
+      id: id as String,
+      name: name,
+      background: color('background'),
+      foreground: color('foreground'),
+    );
+  }
 }
 
 enum ReaderMode {
@@ -104,6 +170,8 @@ enum ReaderTextWeight {
 class ReaderPreferences {
   const ReaderPreferences({
     this.paper = ReaderPaper.system,
+    this.customPalettes = const [],
+    this.customPaletteId,
     this.margin = 26,
     this.marginLeft,
     this.marginRight,
@@ -139,6 +207,15 @@ class ReaderPreferences {
     this.backgroundFit = BoxFit.cover,
   });
   final ReaderPaper paper;
+  final List<ReaderCustomPalette> customPalettes;
+  final String? customPaletteId;
+  ReaderCustomPalette? get customPalette {
+    for (final palette in customPalettes) {
+      if (palette.id == customPaletteId) return palette;
+    }
+    return customPalettes.firstOrNull;
+  }
+
   final double margin, paragraphGap, autoScrollSpeed;
   final bool paragraphGapOverride, catalogueReversed;
   // Null horizontal edges preserve old records and existing margin callers.
@@ -200,14 +277,17 @@ class ReaderPreferences {
     ReaderPaper.parchment => const Color(0xFFEDE2CA),
     ReaderPaper.sage => const Color(0xFFE4EBDD),
     ReaderPaper.night => ArchiveDesign.darkBackground,
+    ReaderPaper.custom => customPalette?.background ?? const Color(0xFFF6F5EF),
   };
   Color controlForeground(bool dark) =>
-      paper == ReaderPaper.night || paper == ReaderPaper.system && dark
-      ? ArchiveDesign.darkInk
-      : const Color(0xFF30352F);
-  bool darkPaper(bool dark) =>
-      paper == ReaderPaper.night || paper == ReaderPaper.system && dark;
-  Color foreground(bool dark) => darkPaper(dark)
+      darkPaper(dark) ? ArchiveDesign.darkInk : const Color(0xFF30352F);
+  bool darkPaper(bool dark) => paper == ReaderPaper.custom
+      ? ThemeData.estimateBrightnessForColor(background(dark)) ==
+            Brightness.dark
+      : paper == ReaderPaper.night || paper == ReaderPaper.system && dark;
+  Color foreground(bool dark) => paper == ReaderPaper.custom
+      ? customPalette?.foreground ?? const Color(0xFF30352F)
+      : darkPaper(dark)
       ? Color.lerp(
           background(dark),
           controlForeground(dark),
@@ -216,6 +296,11 @@ class ReaderPreferences {
       : controlForeground(dark);
   Map<String, Object?> toJson() => {
     'paper': paper.name,
+    if (customPalettes.isNotEmpty)
+      'customPalettes': [
+        for (final palette in customPalettes) palette.toJson(),
+      ],
+    if (customPaletteId != null) 'customPaletteId': customPaletteId,
     'margin': margin,
     if (marginLeft != null) 'marginLeft': marginLeft,
     if (marginRight != null) 'marginRight': marginRight,
@@ -282,10 +367,31 @@ class ReaderPreferences {
         !validBackgroundId(json['backgroundImage'])) {
       throw const FormatException('阅读背景记录有误');
     }
+    final palettes = json['customPalettes'] ?? const [];
+    final paletteId = json['customPaletteId'];
+    if (palettes is! List ||
+        palettes.length > maximumReaderCustomPalettes ||
+        paletteId != null && !_validReaderCustomPaletteId(paletteId)) {
+      throw const FormatException('自定义阅读配色记录有误');
+    }
+    final customPalettes = <ReaderCustomPalette>[];
+    final paletteIds = <String>{};
+    for (final record in palettes) {
+      if (record is! Map<String, dynamic>) {
+        throw const FormatException('自定义阅读配色记录有误');
+      }
+      final palette = ReaderCustomPalette.fromJson(record);
+      if (!paletteIds.add(palette.id)) {
+        throw const FormatException('自定义阅读配色标识重复');
+      }
+      customPalettes.add(palette);
+    }
     return ReaderPreferences(
       paper: ReaderPaper.values.firstWhere(
         (p) => p.name == (json['paper'] ?? 'system'),
       ),
+      customPalettes: List.unmodifiable(customPalettes),
+      customPaletteId: paletteId as String?,
       margin: number('margin', 0, 80, 26),
       marginLeft: json['marginLeft'] == null
           ? null
@@ -347,6 +453,9 @@ class ReaderPreferences {
 
   ReaderPreferences copyWith({
     ReaderPaper? paper,
+    List<ReaderCustomPalette>? customPalettes,
+    String? customPaletteId,
+    bool clearCustomPalette = false,
     double? margin,
     double? marginLeft,
     double? marginRight,
@@ -384,6 +493,12 @@ class ReaderPreferences {
     BoxFit? backgroundFit,
   }) => ReaderPreferences(
     paper: paper ?? this.paper,
+    customPalettes: customPalettes == null
+        ? this.customPalettes
+        : List.unmodifiable(customPalettes),
+    customPaletteId: clearCustomPalette
+        ? null
+        : customPaletteId ?? this.customPaletteId,
     margin: margin ?? this.margin,
     marginLeft: marginLeft ?? (margin ?? this.marginLeft),
     marginRight: marginRight ?? (margin ?? this.marginRight),
@@ -426,6 +541,8 @@ class ReaderPreferences {
   /// continue to follow the shared reader. Explicit null margins stay null.
   ReaderPreferences withLayoutOf(ReaderPreferences layout) => ReaderPreferences(
     paper: layout.paper,
+    customPalettes: layout.customPalettes,
+    customPaletteId: layout.customPaletteId,
     margin: layout.margin,
     marginLeft: layout.marginLeft,
     marginRight: layout.marginRight,

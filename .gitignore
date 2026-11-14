@@ -89,6 +89,7 @@ fabric.properties
 .pub/
 .fvm/flutter_sdk
 /build/
+/.local-tools/
 /coverage/
 /.local-samples/
 /android/.gradle/
