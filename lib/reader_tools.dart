@@ -15,8 +15,10 @@ import 'reader_bookmark_excerpt.dart';
 import 'local_platform.dart';
 import 'reader_preferences.dart';
 import 'reader_palette_editor.dart';
+import 'reader_status.dart' show readerInfoPlaceholders;
 import 'font_settings_page.dart';
 import 'glass_choices.dart';
+import 'palette_settings_page.dart' show paletteHex;
 import 'setting_menu.dart';
 import 'book_documents.dart';
 import 'local_books.dart' show isLocalBook;
@@ -345,6 +347,7 @@ class ReaderTools extends StatefulWidget {
     this.languages = const {},
     this.onHiddenLanguagesChanged,
     this.rangeContextResolver,
+    this.onSoloOverlayChanged,
   });
   final Novel novel;
   final LibraryState state;
@@ -368,6 +371,7 @@ class ReaderTools extends StatefulWidget {
   final Future<void> Function(Set<String>, {String? onlyLanguage})?
   onHiddenLanguagesChanged;
   final ReaderAnnotationContextResolver? rangeContextResolver;
+  final ValueChanged<bool>? onSoloOverlayChanged;
 
   @override
   State<ReaderTools> createState() => _ReaderToolsState();
@@ -405,6 +409,8 @@ class _ReaderToolsState extends State<ReaderTools>
         'behavior' => 'turn',
         'layout' => 'page',
         'screen' => 'page',
+        'paragraph' => 'page',
+        'info' => 'info',
         final String category => category,
         _ => 'bookmarks',
       };
@@ -460,6 +466,7 @@ class _ReaderToolsState extends State<ReaderTools>
   final _backgroundFiles = <String, Future<File?>>{};
   String? _category;
   bool _adding = false;
+  bool _infoMarginsOpen = false;
   String? _storageError;
   Key? _activeAdjustment;
   String _marginEdge = '左右';
@@ -501,6 +508,80 @@ class _ReaderToolsState extends State<ReaderTools>
         ],
       ),
     );
+  }
+
+  Future<Color?> _pickInfoColor({
+    required String title,
+    required Color initial,
+    String? subtitle,
+  }) => showJellySheet<Color>(
+    context: context,
+    reduceMotion: widget.state.effectiveReduceMotion,
+    guardDragDismiss: true,
+    builder: (_) => ReaderColorPickerSheet(
+      title: title,
+      initial: initial,
+      subtitle: subtitle,
+    ),
+  );
+
+  Future<void> _editInfoTemplate({
+    required String title,
+    required String initial,
+    required String defaultValue,
+    required ValueChanged<String> onSaved,
+  }) async {
+    final result = await showJellySheet<String>(
+      context: context,
+      reduceMotion: widget.state.effectiveReduceMotion,
+      guardDragDismiss: true,
+      builder: (_) => _ReaderInfoTemplateSheet(
+        title: title,
+        initial: initial,
+        defaultValue: defaultValue,
+      ),
+    );
+    if (!mounted || result == null) return;
+    onSaved(result);
+  }
+
+  Future<void> _openInfoMargins() async {
+    if (_infoMarginsOpen) return;
+    setState(() => _infoMarginsOpen = true);
+    widget.onSoloOverlayChanged?.call(true);
+    var closeAll = false;
+    try {
+      final navigator = Navigator.of(context);
+      final themes = InheritedTheme.capture(
+        from: context,
+        to: navigator.context,
+      );
+      final appearance = GlassAppearance.of(context);
+      final route = _InfoMarginsPopupRoute(
+        reduceMotion:
+            widget.state.effectiveReduceMotion ||
+            MediaQuery.disableAnimationsOf(context),
+        themes: themes,
+        appearance: appearance,
+        builder: (_) => _ReaderInfoMarginsWindow(
+          state: widget.state,
+          readPreferences: () => _readerPreferences,
+          onChanged: _preferences,
+          onPreviewChanged: (active) => widget.onPreviewChanged?.call(active),
+        ),
+      );
+      final result = await navigator.push(route);
+      await route.completed;
+      closeAll = result == _InfoMarginsResult.closeAll;
+      if (closeAll && mounted) {
+        Navigator.pop(context, const ReaderEnterFocus());
+      }
+    } finally {
+      if (!closeAll && mounted) {
+        widget.onSoloOverlayChanged?.call(false);
+        setState(() => _infoMarginsOpen = false);
+      }
+    }
   }
 
   Future<void> _deletePalette(ReaderCustomPalette palette) async {
@@ -992,6 +1073,45 @@ class _ReaderToolsState extends State<ReaderTools>
     );
   }
 
+  Widget _sectionCard(
+    BuildContext context, {
+    Key? key,
+    required String title,
+    required List<Widget> children,
+  }) => DecoratedBox(
+    key: key,
+    decoration: BoxDecoration(
+      color: _activeAdjustment != null
+          ? Colors.transparent
+          : Theme.of(
+              context,
+            ).colorScheme.surfaceContainerHighest.withValues(alpha: .42),
+      borderRadius: BorderRadius.circular(18),
+    ),
+    child: Padding(
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _adjustment(
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: AppText(
+                title,
+                style: const TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ),
+          ...children,
+        ],
+      ),
+    ),
+  );
+
   Future<void> _add() async {
     if (_adding || widget.position == null) return;
     setState(() {
@@ -1126,13 +1246,12 @@ class _ReaderToolsState extends State<ReaderTools>
               child: contents,
             )
           : contents;
-      return PopScope<ReaderToolAction>(
-        canPop: !nested,
-        onPopInvokedWithResult: (didPop, result) {
-          if (!didPop && nested) {
-            _returnCategories();
-          }
-        },
+      final bodyPanel = Visibility(
+        key: const ValueKey('reader-tools-panel-visibility'),
+        visible: !_infoMarginsOpen,
+        maintainSize: true,
+        maintainAnimation: true,
+        maintainState: true,
         child:
             widget.state.reduceMotion || MediaQuery.disableAnimationsOf(context)
             ? panel
@@ -1146,13 +1265,22 @@ class _ReaderToolsState extends State<ReaderTools>
                 child: panel,
               ),
       );
+      return PopScope<ReaderToolAction>(
+        canPop: !nested,
+        onPopInvokedWithResult: (didPop, result) {
+          if (!didPop && nested) {
+            _returnCategories();
+          }
+        },
+        child: bodyPanel,
+      );
     },
   );
 
   static const _categories = <(String, String, IconData)>[
     ('font', '字体', CupertinoIcons.textformat),
-    ('paragraph', '段落', CupertinoIcons.text_alignleft),
     ('page', '屏幕', CupertinoIcons.rectangle),
+    ('info', '信息', CupertinoIcons.info_circle),
     ('theme', '主题', CupertinoIcons.paintbrush),
     ('turn', '翻页', CupertinoIcons.arrow_left_right),
     ('listening', '听书', CupertinoIcons.headphones),
@@ -1166,12 +1294,8 @@ class _ReaderToolsState extends State<ReaderTools>
       widget.scope == ReaderToolsScope.appearance
       ? _categories
             .where(
-              (item) => const {
-                'font',
-                'paragraph',
-                'page',
-                'theme',
-              }.contains(item.$1),
+              (item) =>
+                  const {'font', 'page', 'info', 'theme'}.contains(item.$1),
             )
             .toList()
       : _categories;
@@ -1206,11 +1330,10 @@ class _ReaderToolsState extends State<ReaderTools>
     final categories = _visibleCategories;
     final summaries = <String, String>{
       'font': '${_fontSize.round()} pt · ${p.textWeight.label}',
-      'paragraph': '${_lineHeight.toStringAsFixed(2)} 倍行距',
-      'page': '页边距 · 状态栏 · 阅读信息',
+      'page': '${_lineHeight.toStringAsFixed(2)} 倍行距 · 边距',
+      'info': '页眉 · 页脚 · ${p.statusFontSize.round()} pt',
       'theme': p.paper.label,
       'turn': p.mode.label,
-      'screen': p.hideSystemStatus ? '隐藏状态栏' : '显示状态栏',
       'listening': widget.listeningBuilder == null ? '当前不可用' : '语音 · 播放设置',
       'bookmarks': '${widget.state.bookmarksFor(widget.novel.id).length} 个已保存',
     };
@@ -1362,7 +1485,7 @@ class _ReaderToolsState extends State<ReaderTools>
     required bool compact,
     required String category,
   }) => _settingsItems([
-    if (category == 'page')
+    if (category == 'page') ...[
       _adjustment(
         GlassChoiceGroup<String>(
           enabled: !_changingScope,
@@ -1378,6 +1501,8 @@ class _ReaderToolsState extends State<ReaderTools>
           onChanged: (value) => _changeStyleScope(value == 'book'),
         ),
       ),
+      _adjustment(const SizedBox(height: 12)),
+    ],
     if (category == 'turn' || category == 'theme')
       _adjustment(
         Column(
@@ -1565,118 +1690,167 @@ class _ReaderToolsState extends State<ReaderTools>
         ),
         const ValueKey('reader-font-slider'),
       ),
-    if (category == 'paragraph')
-      _adjustment(
-        ReaderValueSlider(
-          sliderKey: const ValueKey('reader-line-height-slider'),
-          label: _readerPreferences.mode == ReaderMode.vertical ? '列距' : '行距',
-          value: _lineHeight,
-          min: 1.3,
-          max: 2.2,
-          format: (value) => '${value.toStringAsFixed(2)} 倍',
-          onCommitted: widget.onLineHeight,
-          onPreview: widget.onLineHeightPreview,
-          onInteractionChanged: (value) =>
-              _preview(const ValueKey('reader-line-height-slider'), value),
-        ),
-        const ValueKey('reader-line-height-slider'),
+    if (category == 'page') ...[
+      _sectionCard(
+        context,
+        key: const ValueKey('reader-screen-margin-card'),
+        title: '页边距',
+        children: [
+          _adjustment(
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const SizedBox(height: 4),
+                AppControls.segments<String>(
+                  context,
+                  groupValue: _marginEdge,
+                  children: {
+                    for (final edge in ['左右', '左', '右', '上', '下'])
+                      edge: AppText(
+                        edge,
+                        key: ValueKey('reader-margin-edge-$edge'),
+                        style: const TextStyle(fontSize: 12),
+                      ),
+                  },
+                  onValueChanged: (edge) {
+                    if (edge != null) setState(() => _marginEdge = edge);
+                  },
+                ),
+                ReaderValueSlider(
+                  key: ValueKey('reader-margin-control-$_marginEdge'),
+                  sliderKey: const ValueKey('reader-margin-slider'),
+                  label: '页边距 · $_marginEdge',
+                  value: _marginValue(_readerPreferences),
+                  min: 0,
+                  max: 80,
+                  divisions: 40,
+                  format: (v) => '${v.round()} px',
+                  onPreview: (v) =>
+                      _preferences(_withMargin(v), persist: false),
+                  onInteractionChanged: (v) =>
+                      _preview(const ValueKey('reader-margin-slider'), v),
+                  onCommitted: (v) => _preferences(_withMargin(v)),
+                ),
+              ],
+            ),
+            const ValueKey('reader-margin-slider'),
+          ),
+        ],
       ),
-    if (category == 'page')
-      _adjustment(
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            const SizedBox(height: 6),
-            AppControls.segments<String>(
-              context,
-              groupValue: _marginEdge,
-              children: {
-                for (final edge in ['左右', '左', '右', '上', '下'])
-                  edge: AppText(
-                    edge,
-                    key: ValueKey('reader-margin-edge-$edge'),
-                    style: const TextStyle(fontSize: 12),
+      _adjustment(const SizedBox(height: 12)),
+      _sectionCard(
+        context,
+        key: const ValueKey('reader-screen-paragraph-card'),
+        title: '段落',
+        children: [
+          _adjustment(
+            ReaderValueSlider(
+              sliderKey: const ValueKey('reader-line-height-slider'),
+              label: _readerPreferences.mode == ReaderMode.vertical
+                  ? '列距'
+                  : '行距',
+              value: _lineHeight,
+              min: 1.3,
+              max: 2.2,
+              format: (value) => '${value.toStringAsFixed(2)} 倍',
+              onCommitted: widget.onLineHeight,
+              onPreview: widget.onLineHeightPreview,
+              onInteractionChanged: (value) =>
+                  _preview(const ValueKey('reader-line-height-slider'), value),
+            ),
+            const ValueKey('reader-line-height-slider'),
+          ),
+          _adjustment(
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                ReaderValueSlider(
+                  sliderKey: const ValueKey('reader-paragraph-gap-slider'),
+                  label: '段落间距',
+                  value: _readerPreferences.paragraphGap,
+                  min: 0,
+                  max: 32,
+                  divisions: 16,
+                  format: (v) => _readerPreferences.paragraphGapOverride
+                      ? '${v.round()} px'
+                      : '原书',
+                  onPreview: (v) => _preferences(
+                    _readerPreferences.copyWith(
+                      paragraphGap: v,
+                      paragraphGapOverride: true,
+                    ),
+                    persist: false,
                   ),
-              },
-              onValueChanged: (edge) {
-                if (edge != null) setState(() => _marginEdge = edge);
-              },
+                  onInteractionChanged: (v) => _preview(
+                    const ValueKey('reader-paragraph-gap-slider'),
+                    v,
+                  ),
+                  onCommitted: (v) => _preferences(
+                    _readerPreferences.copyWith(
+                      paragraphGap: v,
+                      paragraphGapOverride: true,
+                    ),
+                  ),
+                ),
+                Visibility(
+                  visible: _activeAdjustment == null,
+                  maintainSize: true,
+                  maintainState: true,
+                  maintainAnimation: true,
+                  child: Align(
+                    alignment: Alignment.centerRight,
+                    child: GlassTextButton(
+                      key: const ValueKey('reader-paragraph-gap-original'),
+                      compact: true,
+                      onPressed: _readerPreferences.paragraphGapOverride
+                          ? () => _preferences(
+                              _readerPreferences.copyWith(
+                                paragraphGap: 12,
+                                paragraphGapOverride: false,
+                              ),
+                            )
+                          : null,
+                      child: const AppText('恢复原书段距'),
+                    ),
+                  ),
+                ),
+              ],
             ),
-            ReaderValueSlider(
-              key: ValueKey('reader-margin-control-$_marginEdge'),
-              sliderKey: const ValueKey('reader-margin-slider'),
-              label: '页边距 · $_marginEdge',
-              value: _marginValue(_readerPreferences),
-              min: 0,
-              max: 80,
-              divisions: 40,
-              format: (v) => '${v.round()} px',
-              onPreview: (v) => _preferences(_withMargin(v), persist: false),
-              onInteractionChanged: (v) =>
-                  _preview(const ValueKey('reader-margin-slider'), v),
-              onCommitted: (v) => _preferences(_withMargin(v)),
+            const ValueKey('reader-paragraph-gap-slider'),
+          ),
+          _adjustment(
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _switch(
+                  context,
+                  '首行缩进',
+                  _readerPreferences.indent,
+                  (v) => _preferences(_readerPreferences.copyWith(indent: v)),
+                ),
+                _switch(
+                  context,
+                  _readerPreferences.mode == ReaderMode.vertical
+                      ? '上下对齐'
+                      : '两端对齐',
+                  _readerPreferences.justify,
+                  (v) => _preferences(_readerPreferences.copyWith(justify: v)),
+                ),
+              ],
             ),
-          ],
-        ),
-        const ValueKey('reader-margin-slider'),
+          ),
+        ],
       ),
-    if (category == 'paragraph')
-      _adjustment(
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            ReaderValueSlider(
-              sliderKey: const ValueKey('reader-paragraph-gap-slider'),
-              label: '段落间距',
-              value: _readerPreferences.paragraphGap,
-              min: 0,
-              max: 32,
-              divisions: 16,
-              format: (v) => _readerPreferences.paragraphGapOverride
-                  ? '${v.round()} px'
-                  : '原书',
-              onPreview: (v) => _preferences(
-                _readerPreferences.copyWith(
-                  paragraphGap: v,
-                  paragraphGapOverride: true,
-                ),
-                persist: false,
-              ),
-              onInteractionChanged: (v) =>
-                  _preview(const ValueKey('reader-paragraph-gap-slider'), v),
-              onCommitted: (v) => _preferences(
-                _readerPreferences.copyWith(
-                  paragraphGap: v,
-                  paragraphGapOverride: true,
-                ),
-              ),
-            ),
-            Visibility(
-              visible: _activeAdjustment == null,
-              maintainSize: true,
-              maintainState: true,
-              maintainAnimation: true,
-              child: Align(
-                alignment: Alignment.centerRight,
-                child: GlassTextButton(
-                  key: const ValueKey('reader-paragraph-gap-original'),
-                  compact: true,
-                  onPressed: _readerPreferences.paragraphGapOverride
-                      ? () => _preferences(
-                          _readerPreferences.copyWith(
-                            paragraphGap: 12,
-                            paragraphGapOverride: false,
-                          ),
-                        )
-                      : null,
-                  child: const AppText('恢复原书段距'),
-                ),
-              ),
-            ),
-          ],
-        ),
-        const ValueKey('reader-paragraph-gap-slider'),
+      _adjustment(const SizedBox(height: 12)),
+      _sectionCard(
+        context,
+        key: const ValueKey('reader-screen-display-card'),
+        title: '状态栏与亮度',
+        children: _behaviorItems(context, 'screen'),
       ),
+      _adjustment(const SizedBox(height: 12)),
+    ],
     if (category == 'font')
       Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1716,30 +1890,9 @@ class _ReaderToolsState extends State<ReaderTools>
           ),
         ],
       ),
-    if (category == 'paragraph')
-      _adjustment(
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            _switch(
-              context,
-              '首行缩进',
-              _readerPreferences.indent,
-              (v) => _preferences(_readerPreferences.copyWith(indent: v)),
-            ),
-            _switch(
-              context,
-              _readerPreferences.mode == ReaderMode.vertical ? '上下对齐' : '两端对齐',
-              _readerPreferences.justify,
-              (v) => _preferences(_readerPreferences.copyWith(justify: v)),
-            ),
-          ],
-        ),
-      ),
     if (category == 'turn') ..._behaviorItems(context, 'turn'),
-    if (category == 'page') ..._behaviorItems(context, 'screen'),
-    if (category != 'turn')
+    if (category == 'info') ..._infoItems(context),
+    if (category != 'turn' && category != 'info')
       _adjustment(
         Align(
           alignment: Alignment.centerRight,
@@ -1972,7 +2125,7 @@ class _ReaderToolsState extends State<ReaderTools>
                 (v) => _preferences(prefs.copyWith(hideSystemStatus: v)),
               ),
               const AppText(
-                '章节名始终显示在底部。隐藏系统状态栏后，可单独选择是否显示阅读时间和电量。',
+                '开启后将隐藏系统顶部状态栏。页眉、页脚显示与样式可在「外观 → 信息」中设置。',
                 style: TextStyle(fontSize: 12, height: 1.6),
               ),
               FutureBuilder<bool>(
@@ -2005,105 +2158,6 @@ class _ReaderToolsState extends State<ReaderTools>
                       ),
               ),
             ],
-          ),
-        ),
-      if (category == 'screen')
-        AnimatedOptionSection(
-          expanded: prefs.hideSystemStatus,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              _adjustment(
-                Padding(
-                  key: const ValueKey('reader-status-visibility'),
-                  padding: const EdgeInsets.symmetric(vertical: 8),
-                  child: _switch(
-                    context,
-                    '显示时间与电量',
-                    prefs.showStatusInfo,
-                    (v) => _preferences(prefs.copyWith(showStatusInfo: v)),
-                  ),
-                ),
-              ),
-              AnimatedOptionSection(
-                expanded: prefs.showStatusInfo,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    _adjustment(
-                      ReaderValueSlider(
-                        sliderKey: const ValueKey('reader-status-font-size'),
-                        label: '阅读信息字号',
-                        value: prefs.statusFontSize,
-                        min: 9,
-                        max: 18,
-                        divisions: 9,
-                        format: (v) => '${v.round()} pt',
-                        onPreview: (v) => _preferences(
-                          prefs.copyWith(statusFontSize: v),
-                          persist: false,
-                        ),
-                        onCommitted: (v) =>
-                            _preferences(prefs.copyWith(statusFontSize: v)),
-                        onInteractionChanged: (v) => _preview(
-                          const ValueKey('reader-status-font-size'),
-                          v,
-                        ),
-                      ),
-                      const ValueKey('reader-status-font-size'),
-                    ),
-                    _adjustment(
-                      ReaderValueSlider(
-                        sliderKey: const ValueKey('reader-status-top-offset'),
-                        label: '阅读信息上下位置',
-                        value: prefs.statusTopOffset,
-                        min: -8,
-                        max: 24,
-                        divisions: 32,
-                        format: (v) => v == 0
-                            ? '居中'
-                            : '${v > 0 ? '下移' : '上移'} ${v.abs().round()}',
-                        onPreview: (v) => _preferences(
-                          prefs.copyWith(statusTopOffset: v),
-                          persist: false,
-                        ),
-                        onCommitted: (v) =>
-                            _preferences(prefs.copyWith(statusTopOffset: v)),
-                        onInteractionChanged: (v) => _preview(
-                          const ValueKey('reader-status-top-offset'),
-                          v,
-                        ),
-                      ),
-                      const ValueKey('reader-status-top-offset'),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-      if (category == 'screen')
-        AnimatedOptionSection(
-          expanded: prefs.showReaderStatus,
-          child: _adjustment(
-            ReaderValueSlider(
-              sliderKey: const ValueKey('reader-status-inset'),
-              label: '阅读信息左右留边',
-              value: prefs.statusSideInset,
-              min: 0,
-              max: 96,
-              divisions: 48,
-              format: (v) => v == 0 ? '自动' : '+${v.round()}',
-              onPreview: (v) => _preferences(
-                prefs.copyWith(statusSideInset: v),
-                persist: false,
-              ),
-              onCommitted: (v) =>
-                  _preferences(prefs.copyWith(statusSideInset: v)),
-              onInteractionChanged: (v) =>
-                  _preview(const ValueKey('reader-status-inset'), v),
-            ),
-            const ValueKey('reader-status-inset'),
           ),
         ),
       ...[
@@ -2295,6 +2349,382 @@ class _ReaderToolsState extends State<ReaderTools>
           ),
         ),
     ];
+  }
+
+  List<Widget> _infoItems(BuildContext context) {
+    final prefs = _readerPreferences;
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final defaultColor = Color(
+      prefs.effectiveInfoColor(dark).toARGB32() | 0xFF000000,
+    );
+    return [
+      ..._infoBarSection(
+        context,
+        keyPrefix: 'reader-header',
+        title: '页眉',
+        visibilityLabel: '页眉显示',
+        visibility: prefs.headerVisibility,
+        onVisibilityChanged: (v) =>
+            _preferences(_readerPreferences.copyWith(headerVisibility: v)),
+        notice:
+            prefs.headerVisibility ==
+                    ReaderBarVisibility.hideWhenStatusShown &&
+                !prefs.hideSystemStatus
+            ? '当前系统状态栏显示，已按设置自动隐藏页眉。'
+            : null,
+        left: prefs.headerLeft,
+        middle: prefs.headerMiddle,
+        right: prefs.headerRight,
+        defaultLeft: defaultReaderHeaderLeft,
+        defaultMiddle: defaultReaderHeaderMiddle,
+        defaultRight: defaultReaderHeaderRight,
+        applyLeft: (v) => _readerPreferences.copyWith(headerLeft: v),
+        applyMiddle: (v) => _readerPreferences.copyWith(headerMiddle: v),
+        applyRight: (v) => _readerPreferences.copyWith(headerRight: v),
+      ),
+      _adjustment(const Divider(height: 24)),
+      ..._infoBarSection(
+        context,
+        keyPrefix: 'reader-footer',
+        title: '页脚',
+        visibilityLabel: '页脚显示',
+        visibility: prefs.footerVisibility,
+        onVisibilityChanged: (v) =>
+            _preferences(_readerPreferences.copyWith(footerVisibility: v)),
+        notice:
+            prefs.footerVisibility ==
+                    ReaderBarVisibility.hideWhenStatusShown &&
+                !prefs.hideSystemStatus
+            ? '当前系统状态栏显示，已按设置自动隐藏页脚。'
+            : null,
+        left: prefs.footerLeft,
+        middle: prefs.footerMiddle,
+        right: prefs.footerRight,
+        defaultLeft: defaultReaderFooterLeft,
+        defaultMiddle: defaultReaderFooterMiddle,
+        defaultRight: defaultReaderFooterRight,
+        applyLeft: (v) => _readerPreferences.copyWith(footerLeft: v),
+        applyMiddle: (v) => _readerPreferences.copyWith(footerMiddle: v),
+        applyRight: (v) => _readerPreferences.copyWith(footerRight: v),
+      ),
+      _adjustment(const Divider(height: 24)),
+      _adjustment(
+        const Padding(
+          padding: EdgeInsets.only(bottom: 4),
+          child: AppText(
+            '页眉与页脚样式',
+            style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+          ),
+        ),
+      ),
+      _adjustment(
+        ReaderValueSlider(
+          sliderKey: const ValueKey('reader-status-font-size'),
+          label: '信息字号',
+          value: prefs.statusFontSize,
+          min: 9,
+          max: 18,
+          divisions: 9,
+          format: (v) => '${v.round()} pt',
+          onPreview: (v) => _preferences(
+            _readerPreferences.copyWith(statusFontSize: v),
+            persist: false,
+          ),
+          onCommitted: (v) =>
+              _preferences(_readerPreferences.copyWith(statusFontSize: v)),
+          onInteractionChanged: (v) =>
+              _preview(const ValueKey('reader-status-font-size'), v),
+        ),
+        const ValueKey('reader-status-font-size'),
+      ),
+      _adjustment(
+        _infoSlotTile(
+          context,
+          key: const ValueKey('reader-info-margins-entry'),
+          label: '边距',
+          onTap: _openInfoMargins,
+        ),
+      ),
+      _adjustment(
+        GlassChoiceGroup<bool>(
+          name: 'reader-info-text-color-mode',
+          label: '文字颜色',
+          value: prefs.infoTextColor != null,
+          options: const {false: '跟随主题', true: '自定义'},
+          optionName: (custom) => custom ? 'custom' : 'theme',
+          labelSize: 14,
+          optionSize: 12,
+          onChanged: (custom) => _preferences(
+            custom
+                ? _readerPreferences.copyWith(
+                    infoTextColor: prefs.infoTextColor ?? defaultColor,
+                  )
+                : _readerPreferences.copyWith(clearInfoTextColor: true),
+          ),
+        ),
+      ),
+      AnimatedOptionSection(
+        expanded: prefs.infoTextColor != null,
+        child: _adjustment(
+          _infoColorTile(
+            context,
+            key: const ValueKey('reader-info-text-color-pick'),
+            label: '自定义文字颜色',
+            color: prefs.infoTextColor ?? defaultColor,
+            onTap: () async {
+              final picked = await _pickInfoColor(
+                title: '页眉与页脚文字颜色',
+                initial: prefs.infoTextColor ?? defaultColor,
+                subtitle: '将覆盖当前阅读主题的默认信息文字颜色',
+              );
+              if (!mounted || picked == null) return;
+              _preferences(_readerPreferences.copyWith(infoTextColor: picked));
+            },
+          ),
+        ),
+      ),
+      _adjustment(
+        GlassChoiceGroup<ReaderInfoDividerMode>(
+          name: 'reader-info-divider-mode',
+          label: '分隔线颜色',
+          value: prefs.infoDividerMode,
+          options: {
+            for (final mode in ReaderInfoDividerMode.values) mode: mode.label,
+          },
+          optionName: (mode) => mode.name,
+          labelSize: 14,
+          optionSize: 12,
+          onChanged: (mode) => _preferences(
+            mode == ReaderInfoDividerMode.custom
+                ? _readerPreferences.copyWith(
+                    infoDividerMode: mode,
+                    infoDividerColor: prefs.infoDividerColor ?? defaultColor,
+                  )
+                : _readerPreferences.copyWith(infoDividerMode: mode),
+          ),
+        ),
+      ),
+      AnimatedOptionSection(
+        expanded: prefs.infoDividerMode == ReaderInfoDividerMode.custom,
+        child: _adjustment(
+          _infoColorTile(
+            context,
+            key: const ValueKey('reader-info-divider-color-pick'),
+            label: '自定义分隔线颜色',
+            color: prefs.infoDividerColor ?? defaultColor,
+            onTap: () async {
+              final picked = await _pickInfoColor(
+                title: '页眉与页脚分隔线颜色',
+                initial: prefs.infoDividerColor ?? defaultColor,
+                subtitle: '显示在页眉下方与页脚上方的细分割线',
+              );
+              if (!mounted || picked == null) return;
+              _preferences(
+                _readerPreferences.copyWith(
+                  infoDividerMode: ReaderInfoDividerMode.custom,
+                  infoDividerColor: picked,
+                ),
+              );
+            },
+          ),
+        ),
+      ),
+    ];
+  }
+
+  List<Widget> _infoBarSection(
+    BuildContext context, {
+    required String keyPrefix,
+    required String title,
+    required String visibilityLabel,
+    required ReaderBarVisibility visibility,
+    required ValueChanged<ReaderBarVisibility> onVisibilityChanged,
+    String? notice,
+    required String left,
+    required String middle,
+    required String right,
+    required String defaultLeft,
+    required String defaultMiddle,
+    required String defaultRight,
+    required ReaderPreferences Function(String value) applyLeft,
+    required ReaderPreferences Function(String value) applyMiddle,
+    required ReaderPreferences Function(String value) applyRight,
+  }) {
+    final slots = [
+      (
+        suffix: 'left-slot',
+        label: '左侧信息',
+        value: left,
+        defaultValue: defaultLeft,
+        apply: applyLeft,
+      ),
+      (
+        suffix: 'middle-slot',
+        label: '中间信息',
+        value: middle,
+        defaultValue: defaultMiddle,
+        apply: applyMiddle,
+      ),
+      (
+        suffix: 'right-slot',
+        label: '右侧信息',
+        value: right,
+        defaultValue: defaultRight,
+        apply: applyRight,
+      ),
+    ];
+    return [
+      _adjustment(
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            GlassChoiceGroup<ReaderBarVisibility>(
+              name: '$keyPrefix-visibility',
+              label: visibilityLabel,
+              value: visibility,
+              options: {
+                for (final v in ReaderBarVisibility.values) v: v.label,
+              },
+              optionName: (v) => v.name,
+              labelSize: 14,
+              optionSize: 12,
+              onChanged: onVisibilityChanged,
+            ),
+            if (notice != null) ...[
+              const SizedBox(height: 6),
+              AppText(
+                notice,
+                style: const TextStyle(fontSize: 12, height: 1.5),
+              ),
+            ],
+          ],
+        ),
+      ),
+      AnimatedOptionSection(
+        expanded: visibility != ReaderBarVisibility.hide,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            for (final slot in slots)
+              _adjustment(
+                _infoSlotTile(
+                  context,
+                  key: ValueKey('$keyPrefix-${slot.suffix}'),
+                  label: '$title · ${slot.label}',
+                  value: slot.value,
+                  onTap: () => _editInfoTemplate(
+                    title: '$title · ${slot.label}',
+                    initial: slot.value,
+                    defaultValue: slot.defaultValue,
+                    onSaved: (v) => _preferences(slot.apply(v)),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    ];
+  }
+
+  Widget _infoSlotTile(
+    BuildContext context, {
+    required Key key,
+    required String label,
+    String? value,
+    required VoidCallback onTap,
+  }) {
+    final scheme = Theme.of(context).colorScheme;
+    final empty = value != null && value.isEmpty;
+    return JellyTapSurface(
+      key: key,
+      onTap: onTap,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minHeight: 48),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
+          child: Row(
+            children: [
+              if (value == null)
+                Expanded(
+                  child: AppText(label, style: const TextStyle(fontSize: 14)),
+                )
+              else ...[
+                AppText(label, style: const TextStyle(fontSize: 14)),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: AppText(
+                    empty ? '留空' : value,
+                    textAlign: TextAlign.end,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: empty
+                          ? scheme.onSurfaceVariant.withValues(alpha: .6)
+                          : scheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+              ],
+              const SizedBox(width: 6),
+              Icon(
+                CupertinoIcons.chevron_forward,
+                size: 16,
+                color: scheme.onSurfaceVariant,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _infoColorTile(
+    BuildContext context, {
+    required Key key,
+    required String label,
+    required Color color,
+    required VoidCallback onTap,
+  }) {
+    final scheme = Theme.of(context).colorScheme;
+    final opaque = Color(color.toARGB32() | 0xFF000000);
+    return JellyTapSurface(
+      key: key,
+      onTap: onTap,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minHeight: 48),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
+          child: Row(
+            children: [
+              Expanded(
+                child: AppText(label, style: const TextStyle(fontSize: 14)),
+              ),
+              Container(
+                width: 20,
+                height: 20,
+                decoration: BoxDecoration(
+                  color: opaque,
+                  shape: BoxShape.circle,
+                  border: Border.all(color: scheme.outline),
+                ),
+              ),
+              const SizedBox(width: 8),
+              AppText(
+                paletteHex(opaque),
+                style: TextStyle(fontSize: 13, color: scheme.onSurfaceVariant),
+              ),
+              const SizedBox(width: 6),
+              Icon(
+                CupertinoIcons.chevron_forward,
+                size: 16,
+                color: scheme.onSurfaceVariant,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }
 
@@ -2649,6 +3079,527 @@ class _ReaderValueSliderState extends State<ReaderValueSlider> {
           const SizedBox(height: 4),
           _slider(context),
         ],
+      ),
+    );
+  }
+}
+
+class _ReaderInfoTemplateSheet extends StatefulWidget {
+  const _ReaderInfoTemplateSheet({
+    required this.title,
+    required this.initial,
+    required this.defaultValue,
+  });
+
+  final String title;
+  final String initial;
+  final String defaultValue;
+
+  @override
+  State<_ReaderInfoTemplateSheet> createState() =>
+      _ReaderInfoTemplateSheetState();
+}
+
+class _ReaderInfoTemplateSheetState extends State<_ReaderInfoTemplateSheet> {
+  late final TextEditingController _controller = TextEditingController(
+    text: widget.initial,
+  );
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _insertToken(String token) {
+    final text = _controller.text;
+    final sel = _controller.selection;
+    final start = sel.isValid ? sel.start.clamp(0, text.length) : text.length;
+    final end = sel.isValid ? sel.end.clamp(start, text.length) : text.length;
+    final next = text.replaceRange(start, end, token);
+    if (next.length > maximumReaderInfoTemplateLength) return;
+    _controller.value = TextEditingValue(
+      text: next,
+      selection: TextSelection.collapsed(offset: start + token.length),
+    );
+    setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final decoration = BoxDecoration(
+      color: scheme.surfaceContainerLow,
+      borderRadius: BorderRadius.circular(8),
+      border: Border.all(color: scheme.outlineVariant),
+    );
+    return SafeArea(
+      top: false,
+      child: SingleChildScrollView(
+        primary: false,
+        padding: EdgeInsets.fromLTRB(
+          24,
+          18,
+          24,
+          MediaQuery.viewInsetsOf(context).bottom + 24,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+          ArchiveSection(title: widget.title, code: 'READER / INFO'),
+          const SizedBox(height: 12),
+          Semantics(
+            label: widget.title,
+            child: CupertinoTextField(
+              key: const ValueKey('reader-info-template-input'),
+              controller: _controller,
+              maxLength: maximumReaderInfoTemplateLength,
+              maxLines: 2,
+              minLines: 1,
+              placeholder: '留空则不显示该栏内容',
+              style: Theme.of(context).textTheme.bodyMedium,
+              padding: const EdgeInsets.all(14),
+              decoration: decoration,
+              onChanged: (_) => setState(() {}),
+            ),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              const Expanded(
+                child: AppText(
+                  '点击下方字段可插入光标处，也可直接输入连接符号（如 · / -）。',
+                  style: TextStyle(fontSize: 12, height: 1.5),
+                ),
+              ),
+              GlassTextButton(
+                key: const ValueKey('reader-info-template-clear'),
+                compact: true,
+                onPressed: _controller.text.isEmpty
+                    ? null
+                    : () => setState(() => _controller.clear()),
+                child: const AppText('清空'),
+              ),
+              const SizedBox(width: 6),
+              GlassTextButton(
+                key: const ValueKey('reader-info-template-default'),
+                compact: true,
+                onPressed: () {
+                  _controller.text = widget.defaultValue;
+                  _controller.selection = TextSelection.collapsed(
+                    offset: widget.defaultValue.length,
+                  );
+                  setState(() {});
+                },
+                child: const AppText('默认'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final token in readerInfoPlaceholders)
+                GlassTextButton(
+                  key: ValueKey('reader-info-token-$token'),
+                  compact: true,
+                  onPressed: () => _insertToken(token),
+                  child: AppText(token, style: const TextStyle(fontSize: 12)),
+                ),
+            ],
+          ),
+          const SizedBox(height: 18),
+          Wrap(
+            spacing: 12,
+            alignment: WrapAlignment.end,
+            children: [
+              GlassTextButton(
+                key: const ValueKey('reader-info-template-cancel'),
+                onPressed: () => Navigator.pop(context),
+                child: const AppText('取消'),
+              ),
+              GlassTextButton(
+                key: const ValueKey('reader-info-template-save'),
+                onPressed: () => Navigator.pop(context, _controller.text),
+                child: const AppText('确定'),
+              ),
+            ],
+          ),
+        ],
+      ),
+      ),
+    );
+  }
+}
+
+enum _InfoMarginsResult { backToInfo, closeAll }
+
+class _InfoMarginsPopupRoute extends PopupRoute<_InfoMarginsResult> {
+  _InfoMarginsPopupRoute({
+    required this.builder,
+    required this.reduceMotion,
+    required this.themes,
+    required this.appearance,
+  });
+
+  final WidgetBuilder builder;
+  final bool reduceMotion;
+  final CapturedThemes themes;
+  final GlassAppearance appearance;
+
+  @override
+  Duration get transitionDuration =>
+      reduceMotion ? Duration.zero : const Duration(milliseconds: 260);
+
+  @override
+  Duration get reverseTransitionDuration =>
+      reduceMotion ? Duration.zero : const Duration(milliseconds: 160);
+
+  @override
+  bool get barrierDismissible => true;
+
+  @override
+  Color get barrierColor => Colors.transparent;
+
+  @override
+  String get barrierLabel => '关闭边距设置';
+
+  @override
+  Widget buildPage(
+    BuildContext context,
+    Animation<double> animation,
+    Animation<double> secondaryAnimation,
+  ) {
+    final child = Builder(builder: builder);
+    return themes.wrap(
+      GlassAppearance(
+        blur: appearance.blur,
+        opacity: appearance.opacity,
+        child: Material(
+          type: MaterialType.transparency,
+          child: SafeArea(
+            child: Center(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 20,
+                  vertical: 16,
+                ),
+                child: reduceMotion
+                    ? child
+                    : ArchiveReveal(
+                        animation: animation,
+                        travel: const Offset(0, 10),
+                        child: child,
+                      ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ReaderInfoMarginsWindow extends StatefulWidget {
+  const _ReaderInfoMarginsWindow({
+    required this.state,
+    required this.readPreferences,
+    required this.onChanged,
+    required this.onPreviewChanged,
+  });
+
+  final LibraryState state;
+  final ReaderPreferences Function() readPreferences;
+  final void Function(ReaderPreferences value, {bool persist}) onChanged;
+  final ValueChanged<bool> onPreviewChanged;
+
+  @override
+  State<_ReaderInfoMarginsWindow> createState() =>
+      _ReaderInfoMarginsWindowState();
+}
+
+class _ReaderInfoMarginsWindowState extends State<_ReaderInfoMarginsWindow> {
+  bool _footer = false;
+  Key? _activeSlider;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.state.readerSettingsChanges.addListener(_settingsChanged);
+  }
+
+  @override
+  void didUpdateWidget(_ReaderInfoMarginsWindow oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.state != widget.state) {
+      oldWidget.state.readerSettingsChanges.removeListener(_settingsChanged);
+      widget.state.readerSettingsChanges.addListener(_settingsChanged);
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.state.readerSettingsChanges.removeListener(_settingsChanged);
+    super.dispose();
+  }
+
+  void _settingsChanged() {
+    if (_activeSlider == null && mounted) setState(() {});
+  }
+
+  void _preview(Key key, bool active) {
+    if (!mounted) return;
+    setState(() => _activeSlider = active ? key : null);
+    widget.onPreviewChanged(active);
+  }
+
+  Widget _item(Widget child, [Key? key]) {
+    final active = _activeSlider != null;
+    final visible = !active || key == _activeSlider;
+    return Visibility(
+      visible: visible,
+      maintainSize: true,
+      maintainAnimation: true,
+      maintainState: true,
+      child: CustomPaint(
+        painter: _AdjustmentPlate(
+          active && visible
+              ? Theme.of(context).colorScheme.surface.withValues(alpha: .98)
+              : Colors.transparent,
+        ),
+        child: child,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final prefs = widget.readPreferences();
+    final scheme = Theme.of(context).colorScheme;
+    final barLabel = _footer ? '页脚' : '页眉';
+    final prefix = _footer ? 'reader-footer' : 'reader-header';
+    final visibility = _footer ? prefs.footerVisibility : prefs.headerVisibility;
+    final isDefault = _footer
+        ? prefs.footerMarginTop == 0 &&
+              prefs.footerMarginBottom == 0 &&
+              prefs.footerMarginLeft == null &&
+              prefs.footerMarginRight == null
+        : prefs.headerMarginTop == 0 &&
+              prefs.headerMarginBottom == 0 &&
+              prefs.headerMarginLeft == null &&
+              prefs.headerMarginRight == null;
+    final edges = [
+      (
+        edge: 'top',
+        label: '上边距',
+        value: _footer ? prefs.footerMarginTop : prefs.headerMarginTop,
+        max: 48.0,
+        divisions: 48,
+        hapticSteps: null as int?,
+        apply: (ReaderPreferences p, double v) =>
+            _footer ? p.copyWith(footerMarginTop: v) : p.copyWith(headerMarginTop: v),
+      ),
+      (
+        edge: 'bottom',
+        label: '下边距',
+        value: _footer ? prefs.footerMarginBottom : prefs.headerMarginBottom,
+        max: 48.0,
+        divisions: 48,
+        hapticSteps: null as int?,
+        apply: (ReaderPreferences p, double v) => _footer
+            ? p.copyWith(footerMarginBottom: v)
+            : p.copyWith(headerMarginBottom: v),
+      ),
+      (
+        edge: 'left',
+        label: '左边距',
+        value: _footer
+            ? prefs.effectiveFooterMarginLeft
+            : prefs.effectiveHeaderMarginLeft,
+        max: 80.0,
+        divisions: 80,
+        hapticSteps: 40,
+        apply: (ReaderPreferences p, double v) =>
+            _footer ? p.copyWith(footerMarginLeft: v) : p.copyWith(headerMarginLeft: v),
+      ),
+      (
+        edge: 'right',
+        label: '右边距',
+        value: _footer
+            ? prefs.effectiveFooterMarginRight
+            : prefs.effectiveHeaderMarginRight,
+        max: 80.0,
+        divisions: 80,
+        hapticSteps: 40,
+        apply: (ReaderPreferences p, double v) => _footer
+            ? p.copyWith(footerMarginRight: v)
+            : p.copyWith(headerMarginRight: v),
+      ),
+    ];
+
+    return ConstrainedBox(
+      key: const ValueKey('reader-info-margins-window'),
+      constraints: BoxConstraints(
+        maxWidth: 400,
+        maxHeight: math.max(240, MediaQuery.sizeOf(context).height - 96),
+      ),
+      child: GlassOverlaySurface(
+        transparent: _activeSlider != null,
+        child: SingleChildScrollView(
+          primary: false,
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _item(
+                Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Row(
+                      children: [
+                        GlassIconButton(
+                          key: const ValueKey('reader-info-margins-back'),
+                          icon: CupertinoIcons.chevron_back,
+                          label: '返回信息设置',
+                          onPressed: () =>
+                              Navigator.pop(context, _InfoMarginsResult.backToInfo),
+                        ),
+                        const SizedBox(width: 4),
+                        const Expanded(
+                          child: AppText(
+                            '页眉与页脚边距',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                        GlassTextButton(
+                          key: const ValueKey('reader-info-margins-reset'),
+                          compact: true,
+                          onPressed: isDefault
+                              ? null
+                              : () => widget.onChanged(
+                                  _footer
+                                      ? prefs.copyWith(
+                                          footerMarginTop: 0,
+                                          footerMarginBottom: 0,
+                                          clearFooterHorizontalMargins: true,
+                                        )
+                                      : prefs.copyWith(
+                                          headerMarginTop: 0,
+                                          headerMarginBottom: 0,
+                                          clearHeaderHorizontalMargins: true,
+                                        ),
+                                ),
+                          child: const AppText(
+                            '重置',
+                            style: TextStyle(fontSize: 12),
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                        GlassIconButton(
+                          key: const ValueKey('reader-info-margins-close'),
+                          icon: CupertinoIcons.xmark,
+                          label: '关闭并回到正文',
+                          onPressed: () =>
+                              Navigator.pop(context, _InfoMarginsResult.closeAll),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    AppControls.segments<bool>(
+                      context,
+                      groupValue: _footer,
+                      children: const {
+                        false: AppText(
+                          '页眉',
+                          key: ValueKey('reader-info-margins-tab-header'),
+                          style: TextStyle(fontSize: 13),
+                        ),
+                        true: AppText(
+                          '页脚',
+                          key: ValueKey('reader-info-margins-tab-footer'),
+                          style: TextStyle(fontSize: 13),
+                        ),
+                      },
+                      onValueChanged: (value) {
+                        if (value != null) setState(() => _footer = value);
+                      },
+                    ),
+                    if (visibility == ReaderBarVisibility.hide) ...[
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: AppText(
+                              '当前$barLabel已设为隐藏',
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: scheme.onSurfaceVariant,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          GlassTextButton(
+                            key: const ValueKey('reader-info-margins-show-bar'),
+                            compact: true,
+                            onPressed: () => widget.onChanged(
+                              _footer
+                                  ? prefs.copyWith(
+                                      footerVisibility: ReaderBarVisibility.show,
+                                    )
+                                  : prefs.copyWith(
+                                      headerVisibility: ReaderBarVisibility.show,
+                                    ),
+                            ),
+                            child: const AppText(
+                              '设为显示',
+                              style: TextStyle(fontSize: 12),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                    const SizedBox(height: 4),
+                  ],
+                ),
+              ),
+              for (final item in edges)
+                _item(
+                  ReaderValueSlider(
+                    key: ValueKey('$prefix-control-${item.edge}'),
+                    sliderKey: ValueKey('$prefix-margin-${item.edge}'),
+                    label: item.label,
+                    value: item.value,
+                    min: 0,
+                    max: item.max,
+                    divisions: item.divisions,
+                    hapticSteps: item.hapticSteps,
+                    format: (v) => '${v.round()} px',
+                    onPreview: (v) => widget.onChanged(
+                      item.apply(widget.readPreferences(), v),
+                      persist: false,
+                    ),
+                    onCommitted: (v) => widget.onChanged(
+                      item.apply(widget.readPreferences(), v),
+                    ),
+                    onInteractionChanged: (active) =>
+                        _preview(ValueKey('$prefix-margin-${item.edge}'), active),
+                  ),
+                  ValueKey('$prefix-margin-${item.edge}'),
+                ),
+            ],
+          ),
+        ),
       ),
     );
   }

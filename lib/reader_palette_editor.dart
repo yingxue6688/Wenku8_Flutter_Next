@@ -33,18 +33,13 @@ class _ReaderPaletteEditorState extends State<ReaderPaletteEditor> {
       !RegExp(r'[\x00-\x1f\x7f]').hasMatch(_name.text);
   bool get _canSave => _validName && _background.valid && _foreground.valid;
 
-  void _change(HSVColor value) => setState(() {
-    _draft.hsv = value;
-    _draft.color = value.toColor();
-    _draft.hex.text = paletteHex(_draft.color);
-    _draft.valid = true;
-  });
+  void _change(HSVColor value) => setState(() => _draft.setHsv(value));
 
   @override
   void dispose() {
     _name.dispose();
-    _background.hex.dispose();
-    _foreground.hex.dispose();
+    _background.dispose();
+    _foreground.dispose();
     super.dispose();
   }
 
@@ -152,50 +147,19 @@ class _ReaderPaletteEditorState extends State<ReaderPaletteEditor> {
             ],
           ),
           const SizedBox(height: 8),
-          _ColorBoard(hsv: _draft.hsv, onChanged: _change),
-          const SizedBox(height: 12),
-          AppText('色相 · ${_draft.hsv.hue.round()}°'),
-          _HueBar(
-            key: const ValueKey('reader-palette-hue'),
-            label: '$_target色相',
-            hue: _draft.hsv.hue,
-            onChanged: (hue) => _change(_draft.hsv.withHue(hue)),
-          ),
-          const SizedBox(height: 8),
-          AppText('$_target HEX', style: const TextStyle(fontSize: 13)),
-          const SizedBox(height: 8),
-          Semantics(
-            label: '$_target HEX 色值',
-            child: CupertinoTextField(
-              key: ValueKey(
-                'reader-palette-hex-${_editingBackground ? 'background' : 'foreground'}',
-              ),
-              controller: _draft.hex,
-              maxLength: 7,
-              autocorrect: false,
-              enableSuggestions: false,
-              placeholder: '#F6F5EF',
-              style: Theme.of(context).textTheme.bodyMedium,
-              padding: const EdgeInsets.all(14),
-              decoration: fieldDecoration,
-              onChanged: (text) => setState(() {
-                final color = parsePaletteHex(text);
-                _draft.valid = color != null;
-                if (color != null) {
-                  _draft.color = color;
-                  _draft.hsv = HSVColor.fromColor(color);
-                }
-              }),
+          _ColorPickerControls(
+            draft: _draft,
+            label: _target,
+            fieldDecoration: fieldDecoration,
+            scheme: scheme,
+            boardKey: const ValueKey('reader-palette-color-board'),
+            hueKey: const ValueKey('reader-palette-hue'),
+            hexKey: ValueKey(
+              'reader-palette-hex-${_editingBackground ? 'background' : 'foreground'}',
             ),
+            onHsvChanged: _change,
+            onHexChanged: (text) => setState(() => _draft.setHex(text)),
           ),
-          if (!_draft.valid)
-            Padding(
-              padding: const EdgeInsets.only(top: 6),
-              child: AppText(
-                '请输入 6 位十六进制色值，例如 #F6F5EF',
-                style: TextStyle(color: scheme.error, fontSize: 12),
-              ),
-            ),
           if (_editingBackground ? !_foreground.valid : !_background.valid)
             Padding(
               padding: const EdgeInsets.only(top: 6),
@@ -246,18 +210,219 @@ class _ReaderPaletteEditorState extends State<ReaderPaletteEditor> {
 }
 
 class _ColorDraft {
-  _ColorDraft(this.color)
-    : hsv = HSVColor.fromColor(color),
-      hex = TextEditingController(text: paletteHex(color));
+  _ColorDraft(Color initial)
+    : color = Color(initial.toARGB32() | 0xFF000000),
+      hsv = HSVColor.fromColor(Color(initial.toARGB32() | 0xFF000000)),
+      hex = TextEditingController(
+        text: paletteHex(Color(initial.toARGB32() | 0xFF000000)),
+      );
 
   Color color;
   HSVColor hsv;
   final TextEditingController hex;
   bool valid = true;
+
+  void setHsv(HSVColor value) {
+    hsv = value;
+    color = value.toColor();
+    hex.text = paletteHex(color);
+    valid = true;
+  }
+
+  void setHex(String text) {
+    final parsed = parsePaletteHex(text);
+    valid = parsed != null;
+    if (parsed != null) {
+      color = parsed;
+      hsv = HSVColor.fromColor(parsed);
+    }
+  }
+
+  void dispose() => hex.dispose();
+}
+
+/// Reusable single-color HSV + HEX sheet for reader info text and divider colors.
+class ReaderColorPickerSheet extends StatefulWidget {
+  const ReaderColorPickerSheet({
+    super.key,
+    required this.title,
+    required this.initial,
+    this.subtitle,
+  });
+
+  final String title;
+  final Color initial;
+  final String? subtitle;
+
+  @override
+  State<ReaderColorPickerSheet> createState() => _ReaderColorPickerSheetState();
+}
+
+class _ReaderColorPickerSheetState extends State<ReaderColorPickerSheet> {
+  late final _draft = _ColorDraft(widget.initial);
+
+  @override
+  void dispose() {
+    _draft.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final fieldDecoration = BoxDecoration(
+      color: scheme.surfaceContainerLow,
+      borderRadius: BorderRadius.circular(4),
+      border: Border.all(color: scheme.outlineVariant),
+    );
+    return SafeArea(
+      top: false,
+      child: SingleChildScrollView(
+        primary: false,
+        padding: EdgeInsets.fromLTRB(
+          24,
+          18,
+          24,
+          MediaQuery.viewInsetsOf(context).bottom + 24,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+          ArchiveSection(title: widget.title, code: 'READER / COLOR'),
+          if (widget.subtitle != null) ...[
+            const SizedBox(height: 6),
+            AppText(
+              widget.subtitle!,
+              style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 12),
+            ),
+          ],
+          const SizedBox(height: 14),
+          Row(
+            children: [
+              Container(
+                width: 28,
+                height: 28,
+                decoration: BoxDecoration(
+                  color: _draft.color,
+                  shape: BoxShape.circle,
+                  border: Border.all(color: scheme.outline),
+                ),
+              ),
+              const SizedBox(width: 10),
+              AppText(
+                paletteHex(_draft.color),
+                style: TextStyle(
+                  fontSize: 13,
+                  color: scheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          _ColorPickerControls(
+            draft: _draft,
+            label: '颜色',
+            fieldDecoration: fieldDecoration,
+            scheme: scheme,
+            boardKey: const ValueKey('reader-color-picker-board'),
+            hueKey: const ValueKey('reader-color-picker-hue'),
+            hexKey: const ValueKey('reader-color-picker-hex'),
+            onHsvChanged: (v) => setState(() => _draft.setHsv(v)),
+            onHexChanged: (text) => setState(() => _draft.setHex(text)),
+          ),
+          const SizedBox(height: 16),
+          Wrap(
+            spacing: 12,
+            alignment: WrapAlignment.end,
+            children: [
+              GlassTextButton(
+                key: const ValueKey('reader-color-picker-cancel'),
+                onPressed: () => Navigator.pop(context),
+                child: const AppText('取消'),
+              ),
+              GlassTextButton(
+                key: const ValueKey('reader-color-picker-save'),
+                onPressed: !_draft.valid
+                    ? null
+                    : () => Navigator.pop(context, _draft.color),
+                child: const AppText('确定'),
+              ),
+            ],
+          ),
+        ],
+      ),
+      ),
+    );
+  }
+}
+
+class _ColorPickerControls extends StatelessWidget {
+  const _ColorPickerControls({
+    required this.draft,
+    required this.label,
+    required this.fieldDecoration,
+    required this.scheme,
+    required this.boardKey,
+    required this.hueKey,
+    required this.hexKey,
+    required this.onHsvChanged,
+    required this.onHexChanged,
+  });
+
+  final _ColorDraft draft;
+  final String label;
+  final BoxDecoration fieldDecoration;
+  final ColorScheme scheme;
+  final Key boardKey, hueKey, hexKey;
+  final ValueChanged<HSVColor> onHsvChanged;
+  final ValueChanged<String> onHexChanged;
+
+  @override
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      _ColorBoard(key: boardKey, hsv: draft.hsv, onChanged: onHsvChanged),
+      const SizedBox(height: 12),
+      AppText('色相 · ${draft.hsv.hue.round()}°'),
+      _HueBar(
+        key: hueKey,
+        label: '$label色相',
+        hue: draft.hsv.hue,
+        onChanged: (hue) => onHsvChanged(draft.hsv.withHue(hue)),
+      ),
+      const SizedBox(height: 8),
+      AppText('$label HEX', style: const TextStyle(fontSize: 13)),
+      const SizedBox(height: 8),
+      Semantics(
+        label: '$label HEX 色值',
+        child: CupertinoTextField(
+          key: hexKey,
+          controller: draft.hex,
+          maxLength: 7,
+          autocorrect: false,
+          enableSuggestions: false,
+          placeholder: '#F6F5EF',
+          style: Theme.of(context).textTheme.bodyMedium,
+          padding: const EdgeInsets.all(14),
+          decoration: fieldDecoration,
+          onChanged: onHexChanged,
+        ),
+      ),
+      if (!draft.valid)
+        Padding(
+          padding: const EdgeInsets.only(top: 6),
+          child: AppText(
+            '请输入 6 位十六进制色值，例如 #F6F5EF',
+            style: TextStyle(color: scheme.error, fontSize: 12),
+          ),
+        ),
+    ],
+  );
 }
 
 class _ColorBoard extends StatelessWidget {
-  const _ColorBoard({required this.hsv, required this.onChanged});
+  const _ColorBoard({super.key, required this.hsv, required this.onChanged});
 
   final HSVColor hsv;
   final ValueChanged<HSVColor> onChanged;
@@ -276,7 +441,6 @@ class _ColorBoard extends StatelessWidget {
           );
 
           return GestureDetector(
-            key: const ValueKey('reader-palette-color-board'),
             behavior: HitTestBehavior.opaque,
             onTapDown: (details) => pick(details.localPosition),
             onPanStart: (details) => pick(details.localPosition),

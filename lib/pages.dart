@@ -9,7 +9,6 @@ import 'package:flutter/semantics.dart' show CustomSemanticsAction;
 import 'package:flutter/services.dart';
 
 import 'app_ui.dart';
-import 'app_window_insets.dart';
 import 'app_search_field.dart';
 import 'setting_menu.dart';
 import 'cover_images.dart';
@@ -6139,7 +6138,11 @@ class _ReaderPageState extends State<ReaderPage>
   String _layoutKey = '';
   late ReaderPaper _paper;
   late bool _hideSystemStatus;
-  late bool _showStatusInfo;
+  late Object _infoLayout;
+  final _scrollBarInfo =
+      ValueNotifier<
+        ({int generation, String title, int percent, int? chapterIndex})?
+      >(null);
   Widget _readerSurface(Widget child) => ReaderAppearance(
     state: widget.state,
     bookId: widget.novel.id,
@@ -6157,11 +6160,11 @@ class _ReaderPageState extends State<ReaderPage>
     // different paper palette needs to update the chrome's contrast.
     final mode = _readerPreferences.mode;
     final hideSystemStatus = _readerPreferences.hideSystemStatus;
-    final showStatusInfo = _readerPreferences.showStatusInfo;
+    final infoLayout = _readerPreferences.infoLayoutSignature;
     final chapterEntrance = _readerPreferences.chapterEntrance;
     if (mode != _readerMode ||
         hideSystemStatus != _hideSystemStatus ||
-        showStatusInfo != _showStatusInfo ||
+        infoLayout != _infoLayout ||
         chapterEntrance != _chapterEntrance) {
       final position = _currentPosition();
       if (position != null) _prepareRestore(position);
@@ -6171,13 +6174,13 @@ class _ReaderPageState extends State<ReaderPage>
     if (paper != _paper ||
         mode != _readerMode ||
         hideSystemStatus != _hideSystemStatus ||
-        showStatusInfo != _showStatusInfo ||
+        infoLayout != _infoLayout ||
         chapterEntrance != _chapterEntrance) {
       setState(() {
         _paper = paper;
         _readerMode = mode;
         _hideSystemStatus = hideSystemStatus;
-        _showStatusInfo = showStatusInfo;
+        _infoLayout = infoLayout;
         _chapterEntrance = chapterEntrance;
       });
     }
@@ -6490,7 +6493,7 @@ class _ReaderPageState extends State<ReaderPage>
         lifecycle == null || lifecycle == AppLifecycleState.resumed;
     _releaseReadingPosition = widget.state.holdReadingPosition(widget.novel.id);
     _hideSystemStatus = _readerPreferences.hideSystemStatus;
-    _showStatusInfo = _readerPreferences.showStatusInfo;
+    _infoLayout = _readerPreferences.infoLayoutSignature;
     _readerMode = _readerPreferences.mode;
     _chapterEntrance = _readerPreferences.chapterEntrance;
     _chromeTarget = widget.state.readerChromeVisible;
@@ -6558,7 +6561,7 @@ class _ReaderPageState extends State<ReaderPage>
       widget.state.illustrationChanges.addListener(_illustrationLayoutChanged);
       _paper = _readerPreferences.paper;
       _hideSystemStatus = _readerPreferences.hideSystemStatus;
-      _showStatusInfo = _readerPreferences.showStatusInfo;
+      _infoLayout = _readerPreferences.infoLayoutSignature;
     }
   }
 
@@ -6593,6 +6596,7 @@ class _ReaderPageState extends State<ReaderPage>
     _verifiedReading.dispose();
     _cancelChromeProgress();
     _chromeSourceProgress.dispose();
+    _scrollBarInfo.dispose();
     _releaseHandoffTarget?.call();
     _releaseReadingPosition();
     _dismissChromeHint?.call();
@@ -7054,6 +7058,7 @@ class _ReaderPageState extends State<ReaderPage>
     _restoreQueued = false;
     _restoring = false;
     _restoreTicket++;
+    _scrollBarInfo.value = null;
     setState(() {
       _chapterTurnDirection = turnDirection;
       _chapter = index;
@@ -8584,23 +8589,26 @@ class _ReaderPageState extends State<ReaderPage>
               preferences.marginTop)
           .clamp(0.0, double.infinity);
 
-  double _systemStatusExtent(BuildContext context) => !_hideSystemStatus
-      ? 0
-      : _showStatusInfo
-      ? ReaderStatusFooter.heightFor(
-              context,
-              fontSize: _readerPreferences.statusFontSize,
-            ) +
-            math.max(0, _readerPreferences.statusTopOffset)
-      : math.max(
-          MediaQuery.viewPaddingOf(context).top,
-          AppWindowInsets.viewPaddingOf(context).top,
-        );
+  double _topBarExtent(BuildContext context, ReaderPreferences prefs) =>
+      ReaderInfoBar.topExtentFor(
+        context,
+        prefs,
+        dark: Theme.of(context).brightness == Brightness.dark,
+      );
 
-  double _chromeStatusInset(BuildContext context) => _hideSystemStatus
-      ? (_systemStatusExtent(context) - MediaQuery.viewPaddingOf(context).top)
-            .clamp(0.0, double.infinity)
-      : 0;
+  double _bottomBarExtent(BuildContext context, ReaderPreferences prefs) =>
+      ReaderInfoBar.bottomExtentFor(
+        context,
+        prefs,
+        dark: Theme.of(context).brightness == Brightness.dark,
+      );
+
+  double _chromeStatusInset(BuildContext context) {
+    final prefs = _readerPreferences;
+    if (!prefs.hideSystemStatus && !prefs.showsHeader) return 0;
+    return (_topBarExtent(context, prefs) - MediaQuery.viewPaddingOf(context).top)
+        .clamp(0.0, double.infinity);
+  }
 
   double _readerHeaderTop(BuildContext context) {
     final safe = MediaQuery.viewPaddingOf(context).top;
@@ -10246,7 +10254,7 @@ class _ReaderPageState extends State<ReaderPage>
             0,
             MediaQuery.viewPaddingOf(context).bottom +
                 _readerPreferences.marginBottom +
-                ReaderScrollLocation.extentOf(context) -
+                _bottomBarExtent(context, _readerPreferences) -
                 readerDockBottomPadding(context) -
                 (LocalPlatform.ios ? 0 : readerDockPaintPadding.bottom),
           ),
@@ -10437,123 +10445,191 @@ class _ReaderPageState extends State<ReaderPage>
     builder: (context) {
       if (_paginated) return const SizedBox.shrink();
       final preferences = _readerPreferences;
-      if (!footer && !preferences.showReaderStatus) {
+      if (!footer && !preferences.showsHeader) {
         return const SizedBox.shrink();
       }
       final safe = MediaQuery.viewPaddingOf(context);
       final dark = Theme.of(context).brightness == Brightness.dark;
       final generation = _contentGeneration, chapterIndex = _chapter;
-      final statusInsets = !footer && preferences.hideSystemStatus
-          ? ReaderStatusFooter.horizontalInsetsFor(
-              context,
-              extra: preferences.statusSideInset,
-              fontSize: preferences.statusFontSize,
-            )
-          : EdgeInsets.zero;
+      final initialDirectoryIndex = _sourceBook.directoryIndexFor(_chapter) + 1;
+      final initialTitle = readerInformationTitle(
+        chapter.title,
+        initialDirectoryIndex,
+      );
+      final totalChapters = _sourceBook.directory.length;
+      final viewportWidth = MediaQuery.sizeOf(context).width;
+      final insets = ReaderInfoBar.horizontalInsetsFor(
+        context,
+        preferences,
+        footer: footer,
+        viewportWidth: viewportWidth,
+      );
+      final shareBand =
+          !footer && ReaderInfoBar.headerSharesStatusBand(context, preferences);
+      final horizontalMargin = EdgeInsets.only(
+        left: math.max(0.0, insets.left - safe.left),
+        right: math.max(0.0, insets.right - safe.right),
+      );
+      if (!footer) {
+        final headerHeight = ReaderInfoBar.headerBandHeightFor(
+          context,
+          preferences,
+          dark: dark,
+        );
+        return Positioned(
+          top: ReaderInfoBar.headerTopFor(context, preferences),
+          left: safe.left,
+          right: safe.right,
+          height: headerHeight,
+          child: ReaderLocationLayer(
+            chrome: _chrome,
+            interactive: true,
+            child: RepaintBoundary(
+              child: Padding(
+                padding: horizontalMargin,
+                child: ValueListenableBuilder<
+                  ({
+                    int generation,
+                    String title,
+                    int percent,
+                    int? chapterIndex,
+                  })?
+                >(
+                  valueListenable: _scrollBarInfo,
+                  builder: (context, info, _) {
+                    final active = info != null && info.generation == generation;
+                    return ReaderInfoBar(
+                      key: const ValueKey('reader-scroll-info-header'),
+                      left: preferences.headerLeft,
+                      middle: preferences.headerMiddle,
+                      right: preferences.headerRight,
+                      fontSize: preferences.statusFontSize,
+                      color: preferences.effectiveInfoColor(dark),
+                      dividerColor: preferences.effectiveDividerColor(dark),
+                      dividerAbove: false,
+                      statusBand: shareBand,
+                      bottomPadding: preferences.headerMarginBottom,
+                      height: headerHeight,
+                      content: ReaderInfoContent(
+                        bookTitle: _sourceBook.title,
+                        chapterTitle: active ? info.title : initialTitle,
+                        progress: '${active ? info.percent : 0}%',
+                        chapterIndex: active
+                            ? (info.chapterIndex ?? initialDirectoryIndex)
+                            : initialDirectoryIndex,
+                        chapterCount: totalChapters,
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ),
+          ),
+        );
+      }
+      final footerVisible = preferences.showsFooter;
+      final location = ReaderScrollLocation(
+        key: ValueKey('reader-scroll-footer-$_contentGeneration'),
+        controller: _scroll,
+        title: initialTitle,
+        bookTitle: _sourceBook.title,
+        chapterIndex: initialDirectoryIndex,
+        chapterCount: totalChapters,
+        visible: footerVisible,
+        preferences: preferences,
+        footer: true,
+        showClock: false,
+        showBattery: preferences.hideSystemStatus,
+        transparentPaper: preferences.backgroundImage != null,
+        chrome: _chrome,
+        reduceMotion: widget.state.reduceMotion,
+        sourceFraction: _scrollSourceFraction,
+        onFractionChanged: (value) {
+          if (generation == _contentGeneration && chapterIndex == _chapter) {
+            _reportChromeSourceProgress(value);
+          }
+        },
+        onInfoChanged: (title, percent, chapterNo) {
+          if (generation == _contentGeneration && chapterIndex == _chapter) {
+            _scrollBarInfo.value = (
+              generation: generation,
+              title: title,
+              percent: percent,
+              chapterIndex: chapterNo,
+            );
+          }
+        },
+        sourceTitle: _authoredDirectory
+            ? (offset) {
+                final anchor = _paragraphRegistry.capture(
+                  offset + _readingInset,
+                  clampToLast: true,
+                );
+                if (anchor == null) return null;
+                final textOffset =
+                    _paragraphRegistry.captureTextOffset(
+                      anchor.index,
+                      offset + _readingInset,
+                    ) ??
+                    0;
+                return readerInformationTitle(
+                  _sourceBook.readingTitleFor(
+                    _chapter,
+                    paragraph: anchor.index,
+                    offset: textOffset,
+                  ),
+                  _sourceBook.directoryIndexFor(
+                        _chapter,
+                        paragraph: anchor.index,
+                        offset: textOffset,
+                      ) +
+                      1,
+                );
+              }
+            : null,
+        sourceChapterIndex: _authoredDirectory
+            ? (offset) {
+                final anchor = _paragraphRegistry.capture(
+                  offset + _readingInset,
+                  clampToLast: true,
+                );
+                if (anchor == null) return null;
+                final textOffset =
+                    _paragraphRegistry.captureTextOffset(
+                      anchor.index,
+                      offset + _readingInset,
+                    ) ??
+                    0;
+                return _sourceBook.directoryIndexFor(
+                      _chapter,
+                      paragraph: anchor.index,
+                      offset: textOffset,
+                    ) +
+                    1;
+              }
+            : null,
+        margin: horizontalMargin,
+        ink: preferences.controlForeground(dark),
+        paper: preferences.background(dark),
+      );
+      if (!footerVisible) {
+        return Positioned(
+          left: 0,
+          bottom: 0,
+          width: 0,
+          height: 0,
+          child: location,
+        );
+      }
       return Positioned(
-        top: footer ? null : preferences.statusTopOffset,
-        bottom: footer ? safe.bottom + preferences.marginBottom : null,
+        bottom: ReaderInfoBar.footerBottomFor(context),
         left: safe.left,
         right: safe.right,
-        height: footer
-            ? ReaderScrollLocation.extentOf(context)
-            : ReaderStatusFooter.heightFor(
-                context,
-                fontSize: preferences.statusFontSize,
-              ),
+        height: _bottomBarExtent(context, preferences),
         child: ReaderLocationLayer(
           chrome: _chrome,
-          interactive: !footer,
-          child: RepaintBoundary(
-            child: !footer
-                ? Padding(
-                    padding: EdgeInsets.only(
-                      left: math.max(
-                        preferences.leftMargin,
-                        statusInsets.left - safe.left,
-                      ),
-                      right: math.max(
-                        preferences.rightMargin,
-                        statusInsets.right - safe.right,
-                      ),
-                    ),
-                    child: ReaderStatusFooter(
-                      compact: true,
-                      statusBand: true,
-                      fontSize: preferences.statusFontSize,
-                      ink: preferences.controlForeground(dark),
-                      showBattery: true,
-                    ),
-                  )
-                : ReaderScrollLocation(
-                    key: ValueKey(
-                      'reader-scroll-${footer ? 'footer' : 'location'}-$_contentGeneration',
-                    ),
-                    controller: _scroll,
-                    title: readerInformationTitle(
-                      chapter.title,
-                      _sourceBook.directoryIndexFor(_chapter) + 1,
-                    ),
-                    bookTitle: null,
-                    footer: footer,
-                    showClock: !footer,
-                    showBattery: preferences.hideSystemStatus,
-                    statusFontSize: footer ? null : preferences.statusFontSize,
-                    statusBand: !footer,
-                    transparentPaper: preferences.backgroundImage != null,
-                    chrome: _chrome,
-                    reduceMotion: widget.state.reduceMotion,
-                    sourceFraction: _scrollSourceFraction,
-                    onFractionChanged: !footer
-                        ? null
-                        : (value) {
-                            if (generation == _contentGeneration &&
-                                chapterIndex == _chapter) {
-                              _reportChromeSourceProgress(value);
-                            }
-                          },
-                    sourceTitle: _authoredDirectory
-                        ? (offset) {
-                            final anchor = _paragraphRegistry.capture(
-                              offset + _readingInset,
-                              clampToLast: true,
-                            );
-                            if (anchor == null) return null;
-                            final textOffset =
-                                _paragraphRegistry.captureTextOffset(
-                                  anchor.index,
-                                  offset + _readingInset,
-                                ) ??
-                                0;
-                            return readerInformationTitle(
-                              _sourceBook.readingTitleFor(
-                                _chapter,
-                                paragraph: anchor.index,
-                                offset: textOffset,
-                              ),
-                              _sourceBook.directoryIndexFor(
-                                    _chapter,
-                                    paragraph: anchor.index,
-                                    offset: textOffset,
-                                  ) +
-                                  1,
-                            );
-                          }
-                        : null,
-                    margin: EdgeInsets.only(
-                      left: math.max(
-                        preferences.leftMargin,
-                        statusInsets.left - safe.left,
-                      ),
-                      right: math.max(
-                        preferences.rightMargin,
-                        statusInsets.right - safe.right,
-                      ),
-                    ),
-                    ink: preferences.controlForeground(dark),
-                    paper: preferences.background(dark),
-                  ),
-          ),
+          interactive: false,
+          child: RepaintBoundary(child: location),
         ),
       );
     },
@@ -10985,18 +11061,14 @@ class _ReaderPageState extends State<ReaderPage>
       },
       child: Padding(
         padding: EdgeInsets.only(
-          top:
-              (prefs.hideSystemStatus
-                  ? _systemStatusExtent(context)
-                  : safe.top) +
-              prefs.marginTop,
+          top: _topBarExtent(context, prefs) + prefs.marginTop,
           left: safe.left,
           right: safe.right,
           // Hidden information and visible controls share this fixed viewport.
           bottom:
               safe.bottom +
               prefs.marginBottom +
-              ReaderScrollLocation.extentOf(context),
+              _bottomBarExtent(context, prefs),
         ),
         child: ClipRect(
           key: const ValueKey('reader-scroll-safe-viewport'),
@@ -11246,14 +11318,11 @@ class _ReaderPageState extends State<ReaderPage>
             final pagedBottomInset = safe.bottom;
             final pagedPadding = EdgeInsets.fromLTRB(
               prefs.leftMargin + safe.left,
-              (prefs.hideSystemStatus
-                      ? _systemStatusExtent(context)
-                      : safe.top) +
-                  prefs.marginTop,
+              _topBarExtent(context, prefs) + prefs.marginTop,
               prefs.rightMargin + safe.right,
               pagedBottomInset +
                   prefs.marginBottom +
-                  ReaderScrollLocation.extentOf(context),
+                  _bottomBarExtent(context, prefs),
             );
             ReaderPagedChapter? adjacent(int direction) {
               final index = _chapter + direction;
@@ -11267,10 +11336,26 @@ class _ReaderPageState extends State<ReaderPage>
                 content: display.content,
                 title: readerInformationTitle(
                   sourceBook.readingTitleFor(index),
-                  index + 1,
+                  sourceBook.directoryIndexFor(index) + 1,
                 ),
-                titleForAnchor: (anchor) =>
-                    readerInformationTitle(pageTitle(index, anchor), index + 1),
+                titleForAnchor: (anchor) => readerInformationTitle(
+                  pageTitle(index, anchor),
+                  sourceBook.directoryIndexFor(
+                        index,
+                        paragraph: anchor.paragraph,
+                        offset: anchor.offset,
+                      ) +
+                      1,
+                ),
+                chapterIndex: sourceBook.directoryIndexFor(index) + 1,
+                chapterCount: sourceBook.directory.length,
+                chapterIndexForAnchor: (anchor) =>
+                    sourceBook.directoryIndexFor(
+                      index,
+                      paragraph: anchor.paragraph,
+                      offset: anchor.offset,
+                    ) +
+                    1,
                 pageBuilder: (page) => _pagedLeaf(
                   page,
                   paragraphStyle,
@@ -11330,8 +11415,24 @@ class _ReaderPageState extends State<ReaderPage>
                               titleForAnchor: (anchor) =>
                                   readerInformationTitle(
                                     pageTitle(chapterIndex, anchor),
-                                    chapterIndex + 1,
+                                    sourceBook.directoryIndexFor(
+                                          chapterIndex,
+                                          paragraph: anchor.paragraph,
+                                          offset: anchor.offset,
+                                        ) +
+                                        1,
                                   ),
+                              chapterIndex:
+                                  sourceBook.directoryIndexFor(chapterIndex) +
+                                  1,
+                              chapterCount: sourceBook.directory.length,
+                              chapterIndexForAnchor: (anchor) =>
+                                  sourceBook.directoryIndexFor(
+                                    chapterIndex,
+                                    paragraph: anchor.paragraph,
+                                    offset: anchor.offset,
+                                  ) +
+                                  1,
                               position: _restorePending,
                               preservePositionStart: _restoreAlignStart,
                               padding: pagedPadding,
@@ -11396,6 +11497,7 @@ class _ReaderPageState extends State<ReaderPage>
     _followTicket++;
     _followScroll.cancel();
     final preview = ValueNotifier(false);
+    var soloOverlay = false;
 
     try {
       final position = _currentPosition();
@@ -11424,7 +11526,16 @@ class _ReaderPageState extends State<ReaderPage>
               _applyTypography(lineHeight: value, persist: false),
           onPreviewChanged: (value) {
             _typographyPreviewing = value;
-            preview.value = value;
+            preview.value = value || soloOverlay;
+          },
+          onSoloOverlayChanged: (active) {
+            soloOverlay = active;
+            preview.value = active || _typographyPreviewing;
+            if (active) {
+              _animateChrome(false);
+            } else if (mounted && _chromeTarget) {
+              _animateChrome(true);
+            }
           },
           onReset: () {
             _applyTypography(fontSize: 19, lineHeight: 1.72);
@@ -11473,9 +11584,16 @@ class _ReaderPageState extends State<ReaderPage>
               : () => Navigator.pop(context, const ReaderOpenIllustrations()),
         ),
       );
+      if (soloOverlay &&
+          mounted &&
+          action is! ReaderEnterFocus &&
+          _chromeTarget) {
+        _animateChrome(true);
+      }
       if (!mounted) return;
       await _handleReaderAction(action);
     } finally {
+      soloOverlay = false;
       _toolsOpen = false;
       _typographyPreviewing = false;
       preview.dispose();

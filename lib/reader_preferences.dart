@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'archive_design.dart';
 import 'personal_images.dart' show validBackgroundId;
@@ -166,6 +167,32 @@ enum ReaderTextWeight {
   final FontWeight weight;
 }
 
+const maximumReaderInfoTemplateLength = 160;
+const defaultReaderHeaderLeft = '{时间}';
+const defaultReaderHeaderMiddle = '';
+const defaultReaderHeaderRight = '{电量图标数值}';
+const defaultReaderFooterLeft = '{章节}';
+const defaultReaderFooterMiddle = '';
+const defaultReaderFooterRight = '{页码} / {总页数} 页 · {阅读进度}';
+
+enum ReaderBarVisibility {
+  hideWhenStatusShown('状态栏显示时隐藏'),
+  show('显示'),
+  hide('隐藏');
+
+  const ReaderBarVisibility(this.label);
+  final String label;
+}
+
+enum ReaderInfoDividerMode {
+  hidden('隐藏'),
+  inherit('默认'),
+  custom('自定义');
+
+  const ReaderInfoDividerMode(this.label);
+  final String label;
+}
+
 /// Reader-only settings: changing paper never changes the rest of the app.
 class ReaderPreferences {
   const ReaderPreferences({
@@ -195,13 +222,30 @@ class ReaderPreferences {
     this.pageSpeed = ReaderPageSpeed.normal,
     this.hideSystemStatus = false,
     this.showStatusInfo = true,
+    this.headerVisibility = ReaderBarVisibility.hideWhenStatusShown,
+    this.footerVisibility = ReaderBarVisibility.show,
+    this.headerLeft = defaultReaderHeaderLeft,
+    this.headerMiddle = defaultReaderHeaderMiddle,
+    this.headerRight = defaultReaderHeaderRight,
+    this.footerLeft = defaultReaderFooterLeft,
+    this.footerMiddle = defaultReaderFooterMiddle,
+    this.footerRight = defaultReaderFooterRight,
+    this.infoTextColor,
+    this.infoDividerMode = ReaderInfoDividerMode.hidden,
+    this.infoDividerColor,
     this.chapterEntrance = false,
     this.nightTextBrightness = .82,
     this.letterSpacing = .1,
     this.textWeight = ReaderTextWeight.regular,
-    this.statusSideInset = 0,
     this.statusFontSize = 12,
-    this.statusTopOffset = 0,
+    this.headerMarginTop = 0,
+    this.headerMarginBottom = 0,
+    this.headerMarginLeft,
+    this.headerMarginRight,
+    this.footerMarginTop = 0,
+    this.footerMarginBottom = 0,
+    this.footerMarginLeft,
+    this.footerMarginRight,
     this.backgroundImage,
     this.backgroundOpacity = .18,
     this.backgroundFit = BoxFit.cover,
@@ -234,13 +278,49 @@ class ReaderPreferences {
   final ReaderPageSpeed pageSpeed;
   final bool hideSystemStatus;
   final bool showStatusInfo;
-  bool get showReaderStatus => hideSystemStatus && showStatusInfo;
+  final ReaderBarVisibility headerVisibility;
+  final ReaderBarVisibility footerVisibility;
+  final String headerLeft, headerMiddle, headerRight;
+  final String footerLeft, footerMiddle, footerRight;
+  final Color? infoTextColor;
+  final ReaderInfoDividerMode infoDividerMode;
+  final Color? infoDividerColor;
+  bool get showReaderStatus => showsHeader && hideSystemStatus;
+  bool get showsHeader => switch (headerVisibility) {
+    ReaderBarVisibility.hideWhenStatusShown => hideSystemStatus,
+    ReaderBarVisibility.show => true,
+    ReaderBarVisibility.hide => false,
+  };
+  bool get showsFooter => switch (footerVisibility) {
+    ReaderBarVisibility.hideWhenStatusShown => hideSystemStatus,
+    ReaderBarVisibility.show => true,
+    ReaderBarVisibility.hide => false,
+  };
+  Object get infoLayoutSignature => (
+    hideSystemStatus,
+    showsHeader,
+    showsFooter,
+    headerMiddle.trim().isEmpty,
+    infoDividerMode != ReaderInfoDividerMode.hidden,
+    statusFontSize,
+    headerMarginTop,
+    headerMarginBottom,
+    footerMarginTop,
+    footerMarginBottom,
+  );
   final bool chapterEntrance;
   final double nightTextBrightness;
   final double letterSpacing;
   final ReaderTextWeight textWeight;
-  final double statusSideInset;
-  final double statusFontSize, statusTopOffset;
+  final double statusFontSize;
+  final double headerMarginTop, headerMarginBottom;
+  final double? headerMarginLeft, headerMarginRight;
+  final double footerMarginTop, footerMarginBottom;
+  final double? footerMarginLeft, footerMarginRight;
+  double get effectiveHeaderMarginLeft => headerMarginLeft ?? leftMargin;
+  double get effectiveHeaderMarginRight => headerMarginRight ?? rightMargin;
+  double get effectiveFooterMarginLeft => footerMarginLeft ?? leftMargin;
+  double get effectiveFooterMarginRight => footerMarginRight ?? rightMargin;
   final String? backgroundImage;
   final double backgroundOpacity;
   final BoxFit backgroundFit;
@@ -294,6 +374,16 @@ class ReaderPreferences {
           nightTextBrightness,
         )!
       : controlForeground(dark);
+  Color effectiveInfoColor(bool dark) =>
+      infoTextColor ?? controlForeground(dark).withValues(alpha: .72);
+  Color? effectiveDividerColor(bool dark) => switch (infoDividerMode) {
+    ReaderInfoDividerMode.hidden => null,
+    ReaderInfoDividerMode.inherit => effectiveInfoColor(dark).withValues(
+      alpha: .28,
+    ),
+    ReaderInfoDividerMode.custom =>
+      infoDividerColor ?? effectiveInfoColor(dark).withValues(alpha: .28),
+  };
   Map<String, Object?> toJson() => {
     'paper': paper.name,
     if (customPalettes.isNotEmpty)
@@ -325,13 +415,31 @@ class ReaderPreferences {
     'pageSpeed': pageSpeed.name,
     'hideSystemStatus': hideSystemStatus,
     'showStatusInfo': showStatusInfo,
+    'headerVisibility': headerVisibility.name,
+    'footerVisibility': footerVisibility.name,
+    'headerLeft': headerLeft,
+    'headerMiddle': headerMiddle,
+    'headerRight': headerRight,
+    'footerLeft': footerLeft,
+    'footerMiddle': footerMiddle,
+    'footerRight': footerRight,
+    if (infoTextColor != null) 'infoTextColor': infoTextColor!.toARGB32(),
+    'infoDividerMode': infoDividerMode.name,
+    if (infoDividerColor != null)
+      'infoDividerColor': infoDividerColor!.toARGB32(),
     'chapterEntrance': chapterEntrance,
     'nightTextBrightness': nightTextBrightness,
     'letterSpacing': letterSpacing,
     'textWeight': textWeight.name,
-    'statusSideInset': statusSideInset,
     'statusFontSize': statusFontSize,
-    'statusTopOffset': statusTopOffset,
+    'headerMarginTop': headerMarginTop,
+    'headerMarginBottom': headerMarginBottom,
+    if (headerMarginLeft != null) 'headerMarginLeft': headerMarginLeft,
+    if (headerMarginRight != null) 'headerMarginRight': headerMarginRight,
+    'footerMarginTop': footerMarginTop,
+    'footerMarginBottom': footerMarginBottom,
+    if (footerMarginLeft != null) 'footerMarginLeft': footerMarginLeft,
+    if (footerMarginRight != null) 'footerMarginRight': footerMarginRight,
     if (backgroundImage != null) 'backgroundImage': backgroundImage,
     'backgroundOpacity': backgroundOpacity,
     'backgroundFit': backgroundFit.name,
@@ -386,19 +494,64 @@ class ReaderPreferences {
       }
       customPalettes.add(palette);
     }
+    String template(String key, String fallback) {
+      final value = json[key];
+      if (value == null) return fallback;
+      if (value is! String ||
+          value.length > maximumReaderInfoTemplateLength ||
+          RegExp(r'[\x00-\x1f\x7f]').hasMatch(value)) {
+        throw const FormatException('页眉或页脚模板格式有误');
+      }
+      return value;
+    }
+
+    Color? colorOrNull(String key) {
+      final value = json[key];
+      if (value == null) return null;
+      if (value is! int || value < 0xFF000000 || value > 0xFFFFFFFF) {
+        throw const FormatException('页眉或页脚颜色格式有误');
+      }
+      return Color(value);
+    }
+
+    final legacyShowStatus = json['showStatusInfo'] != false;
+    final parsedHeaderVisibility = json['headerVisibility'] == null
+        ? (legacyShowStatus
+              ? ReaderBarVisibility.hideWhenStatusShown
+              : ReaderBarVisibility.hide)
+        : ReaderBarVisibility.values.byName(json['headerVisibility'] as String);
+    final parsedFooterVisibility = json['footerVisibility'] == null
+        ? ReaderBarVisibility.show
+        : ReaderBarVisibility.values.byName(json['footerVisibility'] as String);
+    final parsedDividerMode = json['infoDividerMode'] == null
+        ? ReaderInfoDividerMode.hidden
+        : ReaderInfoDividerMode.values.byName(
+            json['infoDividerMode'] as String,
+          );
+    final parsedMargin = number('margin', 0, 80, 26);
+    final parsedMarginLeft = json['marginLeft'] == null
+        ? null
+        : number('marginLeft', 0, 80, 26);
+    final parsedMarginRight = json['marginRight'] == null
+        ? null
+        : number('marginRight', 0, 80, 26);
+    final legacyTopOffset = json['statusTopOffset'] == null
+        ? 0.0
+        : number('statusTopOffset', -8, 24, 0);
+    final legacySideInset = json['statusSideInset'] == null
+        ? 0.0
+        : number('statusSideInset', 0, 96, 0);
+    final baseLeft = parsedMarginLeft ?? parsedMargin;
+    final baseRight = parsedMarginRight ?? parsedMargin;
     return ReaderPreferences(
       paper: ReaderPaper.values.firstWhere(
         (p) => p.name == (json['paper'] ?? 'system'),
       ),
       customPalettes: List.unmodifiable(customPalettes),
       customPaletteId: paletteId as String?,
-      margin: number('margin', 0, 80, 26),
-      marginLeft: json['marginLeft'] == null
-          ? null
-          : number('marginLeft', 0, 80, 26),
-      marginRight: json['marginRight'] == null
-          ? null
-          : number('marginRight', 0, 80, 26),
+      margin: parsedMargin,
+      marginLeft: parsedMarginLeft,
+      marginRight: parsedMarginRight,
       marginTop: number('marginTop', 0, 80, 8),
       marginBottom: number('marginBottom', 0, 80, 8),
       paragraphGap: number('paragraphGap', 0, 32, 12),
@@ -419,9 +572,45 @@ class ReaderPreferences {
       textWeight: ReaderTextWeight.values.byName(
         json['textWeight'] ?? 'regular',
       ),
-      statusSideInset: number('statusSideInset', 0, 96, 0),
       statusFontSize: number('statusFontSize', 9, 18, 12),
-      statusTopOffset: number('statusTopOffset', -8, 24, 0),
+      headerMarginTop: json['headerMarginTop'] != null
+          ? number('headerMarginTop', 0, 48, 0)
+          : json['infoMarginTop'] != null
+          ? number('infoMarginTop', 0, 48, 0)
+          : math.max(0.0, legacyTopOffset),
+      headerMarginBottom: number('headerMarginBottom', 0, 48, 0),
+      headerMarginLeft: json['headerMarginLeft'] != null
+          ? number('headerMarginLeft', 0, 80, 26)
+          : json['infoMarginLeft'] != null
+          ? number('infoMarginLeft', 0, 80, 26)
+          : (legacySideInset > 0
+                ? (baseLeft + legacySideInset).clamp(0.0, 80.0)
+                : null),
+      headerMarginRight: json['headerMarginRight'] != null
+          ? number('headerMarginRight', 0, 80, 26)
+          : json['infoMarginRight'] != null
+          ? number('infoMarginRight', 0, 80, 26)
+          : (legacySideInset > 0
+                ? (baseRight + legacySideInset).clamp(0.0, 80.0)
+                : null),
+      footerMarginTop: number('footerMarginTop', 0, 48, 0),
+      footerMarginBottom: json['footerMarginBottom'] != null
+          ? number('footerMarginBottom', 0, 48, 0)
+          : number('infoMarginBottom', 0, 48, 0),
+      footerMarginLeft: json['footerMarginLeft'] != null
+          ? number('footerMarginLeft', 0, 80, 26)
+          : json['infoMarginLeft'] != null
+          ? number('infoMarginLeft', 0, 80, 26)
+          : (legacySideInset > 0
+                ? (baseLeft + legacySideInset).clamp(0.0, 80.0)
+                : null),
+      footerMarginRight: json['footerMarginRight'] != null
+          ? number('footerMarginRight', 0, 80, 26)
+          : json['infoMarginRight'] != null
+          ? number('infoMarginRight', 0, 80, 26)
+          : (legacySideInset > 0
+                ? (baseRight + legacySideInset).clamp(0.0, 80.0)
+                : null),
       backgroundImage: json['backgroundImage'] as String?,
       backgroundOpacity: number('backgroundOpacity', .05, 1, .18),
       backgroundFit: (json['backgroundFit'] ?? 'cover') == 'contain'
@@ -435,7 +624,20 @@ class ReaderPreferences {
       tapLayout: ReaderTapLayout.values.byName(json['tapLayout'] ?? 'standard'),
       edgeBrightness: json['edgeBrightness'] == true,
       hideSystemStatus: json['hideSystemStatus'] == true,
-      showStatusInfo: json['showStatusInfo'] != false,
+      showStatusInfo: json['headerVisibility'] == null
+          ? legacyShowStatus
+          : parsedHeaderVisibility != ReaderBarVisibility.hide,
+      headerVisibility: parsedHeaderVisibility,
+      footerVisibility: parsedFooterVisibility,
+      headerLeft: template('headerLeft', defaultReaderHeaderLeft),
+      headerMiddle: template('headerMiddle', defaultReaderHeaderMiddle),
+      headerRight: template('headerRight', defaultReaderHeaderRight),
+      footerLeft: template('footerLeft', defaultReaderFooterLeft),
+      footerMiddle: template('footerMiddle', defaultReaderFooterMiddle),
+      footerRight: template('footerRight', defaultReaderFooterRight),
+      infoTextColor: colorOrNull('infoTextColor'),
+      infoDividerMode: parsedDividerMode,
+      infoDividerColor: colorOrNull('infoDividerColor'),
       chapterEntrance: json['chapterEntrance'] == true,
       pageEffect: ReaderPageEffect.values.byName(
         json['pageEffect'] ?? 'staggered',
@@ -480,62 +682,123 @@ class ReaderPreferences {
     ReaderPageSpeed? pageSpeed,
     bool? hideSystemStatus,
     bool? showStatusInfo,
+    ReaderBarVisibility? headerVisibility,
+    ReaderBarVisibility? footerVisibility,
+    String? headerLeft,
+    String? headerMiddle,
+    String? headerRight,
+    String? footerLeft,
+    String? footerMiddle,
+    String? footerRight,
+    Color? infoTextColor,
+    bool clearInfoTextColor = false,
+    ReaderInfoDividerMode? infoDividerMode,
+    Color? infoDividerColor,
+    bool clearInfoDividerColor = false,
     bool? chapterEntrance,
     double? nightTextBrightness,
     double? letterSpacing,
     ReaderTextWeight? textWeight,
-    double? statusSideInset,
     double? statusFontSize,
-    double? statusTopOffset,
+    double? headerMarginTop,
+    double? headerMarginBottom,
+    double? headerMarginLeft,
+    double? headerMarginRight,
+    bool clearHeaderHorizontalMargins = false,
+    double? footerMarginTop,
+    double? footerMarginBottom,
+    double? footerMarginLeft,
+    double? footerMarginRight,
+    bool clearFooterHorizontalMargins = false,
     String? backgroundImage,
     bool clearBackground = false,
     double? backgroundOpacity,
     BoxFit? backgroundFit,
-  }) => ReaderPreferences(
-    paper: paper ?? this.paper,
-    customPalettes: customPalettes == null
-        ? this.customPalettes
-        : List.unmodifiable(customPalettes),
-    customPaletteId: clearCustomPalette
-        ? null
-        : customPaletteId ?? this.customPaletteId,
-    margin: margin ?? this.margin,
-    marginLeft: marginLeft ?? (margin ?? this.marginLeft),
-    marginRight: marginRight ?? (margin ?? this.marginRight),
-    marginTop: marginTop ?? this.marginTop,
-    marginBottom: marginBottom ?? this.marginBottom,
-    paragraphGap: paragraphGap ?? this.paragraphGap,
-    paragraphGapOverride: paragraphGapOverride ?? this.paragraphGapOverride,
-    catalogueReversed: catalogueReversed ?? this.catalogueReversed,
-    indent: indent ?? this.indent,
-    justify: justify ?? this.justify,
-    tapPaging: tapPaging ?? this.tapPaging,
-    tapBothSidesNext: tapBothSidesNext ?? this.tapBothSidesNext,
-    volumePaging: volumePaging ?? this.volumePaging,
-    brightness: systemBrightness ? null : brightness ?? this.brightness,
-    autoScrollSpeed: autoScrollSpeed ?? this.autoScrollSpeed,
-    mode: mode ?? this.mode,
-    verticalLatinOrientation:
-        verticalLatinOrientation ?? this.verticalLatinOrientation,
-    tapLayout: tapLayout ?? this.tapLayout,
-    edgeBrightness: edgeBrightness ?? this.edgeBrightness,
-    pageEffect: pageEffect ?? this.pageEffect,
-    pageSpeed: pageSpeed ?? this.pageSpeed,
-    hideSystemStatus: hideSystemStatus ?? this.hideSystemStatus,
-    showStatusInfo: showStatusInfo ?? this.showStatusInfo,
-    chapterEntrance: chapterEntrance ?? this.chapterEntrance,
-    nightTextBrightness: nightTextBrightness ?? this.nightTextBrightness,
-    letterSpacing: letterSpacing ?? this.letterSpacing,
-    textWeight: textWeight ?? this.textWeight,
-    statusSideInset: statusSideInset ?? this.statusSideInset,
-    statusFontSize: statusFontSize ?? this.statusFontSize,
-    statusTopOffset: statusTopOffset ?? this.statusTopOffset,
-    backgroundImage: clearBackground
-        ? null
-        : backgroundImage ?? this.backgroundImage,
-    backgroundOpacity: backgroundOpacity ?? this.backgroundOpacity,
-    backgroundFit: backgroundFit ?? this.backgroundFit,
-  );
+  }) {
+    final nextHeaderVisibility =
+        headerVisibility ??
+        (showStatusInfo != null
+            ? (showStatusInfo
+                  ? ReaderBarVisibility.hideWhenStatusShown
+                  : ReaderBarVisibility.hide)
+            : this.headerVisibility);
+    final nextShowStatusInfo =
+        showStatusInfo ?? (nextHeaderVisibility != ReaderBarVisibility.hide);
+    return ReaderPreferences(
+      paper: paper ?? this.paper,
+      customPalettes: customPalettes == null
+          ? this.customPalettes
+          : List.unmodifiable(customPalettes),
+      customPaletteId: clearCustomPalette
+          ? null
+          : customPaletteId ?? this.customPaletteId,
+      margin: margin ?? this.margin,
+      marginLeft: marginLeft ?? (margin ?? this.marginLeft),
+      marginRight: marginRight ?? (margin ?? this.marginRight),
+      marginTop: marginTop ?? this.marginTop,
+      marginBottom: marginBottom ?? this.marginBottom,
+      paragraphGap: paragraphGap ?? this.paragraphGap,
+      paragraphGapOverride: paragraphGapOverride ?? this.paragraphGapOverride,
+      catalogueReversed: catalogueReversed ?? this.catalogueReversed,
+      indent: indent ?? this.indent,
+      justify: justify ?? this.justify,
+      tapPaging: tapPaging ?? this.tapPaging,
+      tapBothSidesNext: tapBothSidesNext ?? this.tapBothSidesNext,
+      volumePaging: volumePaging ?? this.volumePaging,
+      brightness: systemBrightness ? null : brightness ?? this.brightness,
+      autoScrollSpeed: autoScrollSpeed ?? this.autoScrollSpeed,
+      mode: mode ?? this.mode,
+      verticalLatinOrientation:
+          verticalLatinOrientation ?? this.verticalLatinOrientation,
+      tapLayout: tapLayout ?? this.tapLayout,
+      edgeBrightness: edgeBrightness ?? this.edgeBrightness,
+      pageEffect: pageEffect ?? this.pageEffect,
+      pageSpeed: pageSpeed ?? this.pageSpeed,
+      hideSystemStatus: hideSystemStatus ?? this.hideSystemStatus,
+      showStatusInfo: nextShowStatusInfo,
+      headerVisibility: nextHeaderVisibility,
+      footerVisibility: footerVisibility ?? this.footerVisibility,
+      headerLeft: headerLeft ?? this.headerLeft,
+      headerMiddle: headerMiddle ?? this.headerMiddle,
+      headerRight: headerRight ?? this.headerRight,
+      footerLeft: footerLeft ?? this.footerLeft,
+      footerMiddle: footerMiddle ?? this.footerMiddle,
+      footerRight: footerRight ?? this.footerRight,
+      infoTextColor: clearInfoTextColor
+          ? null
+          : infoTextColor ?? this.infoTextColor,
+      infoDividerMode: infoDividerMode ?? this.infoDividerMode,
+      infoDividerColor: clearInfoDividerColor
+          ? null
+          : infoDividerColor ?? this.infoDividerColor,
+      chapterEntrance: chapterEntrance ?? this.chapterEntrance,
+      nightTextBrightness: nightTextBrightness ?? this.nightTextBrightness,
+      letterSpacing: letterSpacing ?? this.letterSpacing,
+      textWeight: textWeight ?? this.textWeight,
+      statusFontSize: statusFontSize ?? this.statusFontSize,
+      headerMarginTop: headerMarginTop ?? this.headerMarginTop,
+      headerMarginBottom: headerMarginBottom ?? this.headerMarginBottom,
+      headerMarginLeft:
+          headerMarginLeft ??
+          (clearHeaderHorizontalMargins ? null : this.headerMarginLeft),
+      headerMarginRight:
+          headerMarginRight ??
+          (clearHeaderHorizontalMargins ? null : this.headerMarginRight),
+      footerMarginTop: footerMarginTop ?? this.footerMarginTop,
+      footerMarginBottom: footerMarginBottom ?? this.footerMarginBottom,
+      footerMarginLeft:
+          footerMarginLeft ??
+          (clearFooterHorizontalMargins ? null : this.footerMarginLeft),
+      footerMarginRight:
+          footerMarginRight ??
+          (clearFooterHorizontalMargins ? null : this.footerMarginRight),
+      backgroundImage: clearBackground
+          ? null
+          : backgroundImage ?? this.backgroundImage,
+      backgroundOpacity: backgroundOpacity ?? this.backgroundOpacity,
+      backgroundFit: backgroundFit ?? this.backgroundFit,
+    );
+  }
 
   /// A book can keep its typography while interaction and device settings
   /// continue to follow the shared reader. Explicit null margins stay null.
@@ -572,9 +835,26 @@ class ReaderPreferences {
     pageSpeed: pageSpeed,
     hideSystemStatus: hideSystemStatus,
     showStatusInfo: showStatusInfo,
+    headerVisibility: headerVisibility,
+    footerVisibility: footerVisibility,
+    headerLeft: headerLeft,
+    headerMiddle: headerMiddle,
+    headerRight: headerRight,
+    footerLeft: footerLeft,
+    footerMiddle: footerMiddle,
+    footerRight: footerRight,
+    infoTextColor: infoTextColor,
+    infoDividerMode: infoDividerMode,
+    infoDividerColor: infoDividerColor,
     chapterEntrance: chapterEntrance,
-    statusSideInset: statusSideInset,
     statusFontSize: statusFontSize,
-    statusTopOffset: statusTopOffset,
+    headerMarginTop: headerMarginTop,
+    headerMarginBottom: headerMarginBottom,
+    headerMarginLeft: headerMarginLeft,
+    headerMarginRight: headerMarginRight,
+    footerMarginTop: footerMarginTop,
+    footerMarginBottom: footerMarginBottom,
+    footerMarginLeft: footerMarginLeft,
+    footerMarginRight: footerMarginRight,
   );
 }

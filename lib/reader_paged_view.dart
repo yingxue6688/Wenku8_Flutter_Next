@@ -14,7 +14,6 @@ import 'reader_page_physics.dart';
 import 'reader_sheet_motion.dart';
 import 'reader_spine_turn.dart';
 import 'reader_status.dart';
-import 'reader_scroll_location.dart';
 import 'reader_chrome.dart';
 
 TextStyle _chapterHeadingStyle(TextStyle style) => style.copyWith(
@@ -191,6 +190,9 @@ class ReaderPagedChapter {
     required this.pageBuilder,
     this.pageBuilderKey,
     this.titleForAnchor,
+    this.chapterIndex,
+    this.chapterCount,
+    this.chapterIndexForAnchor,
   });
   final Object key;
   final ReaderContent content;
@@ -198,6 +200,9 @@ class ReaderPagedChapter {
   final Widget Function(ReaderLeaf page) pageBuilder;
   final Object? pageBuilderKey;
   final String Function(ReaderTextAnchor)? titleForAnchor;
+  final int? chapterIndex;
+  final int? chapterCount;
+  final int Function(ReaderTextAnchor)? chapterIndexForAnchor;
 }
 
 class _AdjacentLayout {
@@ -297,6 +302,9 @@ class ReaderPagedView extends StatefulWidget {
     this.pageBuilderKey,
     this.status,
     this.titleForAnchor,
+    this.chapterIndex,
+    this.chapterCount,
+    this.chapterIndexForAnchor,
     this.backgroundBuilder,
     this.chapterKey,
     this.chapterTurnDirection = 0,
@@ -334,6 +342,9 @@ class ReaderPagedView extends StatefulWidget {
   /// Reader-owned status is part of the turning sheet, not pinned chrome.
   final Widget? status;
   final String Function(ReaderTextAnchor)? titleForAnchor;
+  final int? chapterIndex;
+  final int? chapterCount;
+  final int Function(ReaderTextAnchor)? chapterIndexForAnchor;
   final Widget Function(Widget child)? backgroundBuilder;
   final VoidCallback onReady, onChanged, onUserScroll;
   final ValueChanged<int> onBoundary;
@@ -1560,21 +1571,49 @@ class _ReaderPagedViewState extends State<ReaderPagedView>
             interactive: interactive,
             child: child,
           );
-    final informationStyle = TextStyle(
-      fontSize: 13,
-      height: 1.4,
-      color: widget.preferences
-          .controlForeground(Theme.of(context).brightness == Brightness.dark)
-          .withValues(alpha: .72),
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final viewportWidth = _frameSize.width > 0
+        ? _frameSize.width
+        : MediaQuery.sizeOf(context).width;
+    final shareBand =
+        widget.bookTitle != null &&
+        ReaderInfoBar.headerSharesStatusBand(context, widget.preferences);
+    final headerInsets = ReaderInfoBar.horizontalInsetsFor(
+      context,
+      widget.preferences,
+      footer: false,
+      viewportWidth: viewportWidth,
     );
-    final statusInsets =
-        widget.bookTitle != null && widget.preferences.hideSystemStatus
-        ? ReaderStatusFooter.horizontalInsetsFor(
-            context,
-            extra: widget.preferences.statusSideInset,
-            fontSize: widget.preferences.statusFontSize,
-          )
-        : EdgeInsets.zero;
+    final footerInsets = ReaderInfoBar.horizontalInsetsFor(
+      context,
+      widget.preferences,
+      footer: true,
+      viewportWidth: viewportWidth,
+    );
+    final chapterNumber = adjacent == null
+        ? widget.chapterIndexForAnchor?.call(anchor) ?? widget.chapterIndex
+        : adjacent.chapter.chapterIndexForAnchor?.call(anchor) ??
+              adjacent.chapter.chapterIndex;
+    final chapterTotal = adjacent?.chapter.chapterCount ?? widget.chapterCount;
+    final infoContent = widget.bookTitle == null
+        ? null
+        : ReaderInfoContent(
+            bookTitle: widget.bookTitle!,
+            chapterTitle: title,
+            pageNumber: widget.showPageCount
+                ? perSpread == 1
+                      ? '${first + 1}'
+                      : '${first + 1}–${last + 1}'
+                : null,
+            totalPages: widget.showPageCount
+                ? '${pagination.pages.length}'
+                : null,
+            progress: '${(fraction * 100).round()}%',
+            chapterIndex: chapterNumber,
+            chapterCount: chapterTotal,
+          );
+    final infoColor = widget.preferences.effectiveInfoColor(dark);
+    final dividerColor = widget.preferences.effectiveDividerColor(dark);
     return IgnorePointer(
       ignoring: spread != _restingSpread,
       child: SelectionContainer.disabled(
@@ -1588,87 +1627,21 @@ class _ReaderPagedViewState extends State<ReaderPagedView>
                 top: 0,
                 child: part(widget.status!),
               ),
-            if (widget.bookTitle == null || widget.preferences.showReaderStatus)
+            if (widget.bookTitle == null)
               Positioned(
-                top: widget.bookTitle == null
-                    ? padding.top
-                    : widget.preferences.statusTopOffset,
-                left: padding.left > statusInsets.left
-                    ? padding.left
-                    : statusInsets.left,
-                right: padding.right > statusInsets.right
-                    ? padding.right
-                    : statusInsets.right,
-                child: part(
-                  information(
-                    widget.bookTitle != null
-                        ? ReaderStatusFooter(
-                            key: key('reader-chapter-location'),
-                            compact: true,
-                            statusBand: true,
-                            fontSize: widget.preferences.statusFontSize,
-                            timeAtEnd: false,
-                            showBattery: widget.preferences.hideSystemStatus,
-                            ink: informationStyle.color,
-                          )
-                        : Row(
-                            key: key('reader-chapter-location'),
-                            children: [
-                              Expanded(
-                                child: ReaderChapterTitle(
-                                  text: title,
-                                  key: key('reader-chapter-title'),
-                                  style: _chapterHeadingStyle(widget.style),
-                                  active: spread == _restingSpread,
-                                  chrome: widget.chrome,
-                                  showWithChrome: false,
-                                  reduceMotion: widget.reduceMotion,
-                                ),
-                              ),
-                              if (widget.showPageCount) ...[
-                                const SizedBox(width: 12),
-                                IgnorePointer(
-                                  child: AppText(
-                                    count,
-                                    key: key(
-                                      'reader-page-count',
-                                      leaf: leaves - 1,
-                                    ),
-                                    maxLines: 1,
-                                    textAlign: TextAlign.end,
-                                    style: widget.style.copyWith(
-                                      fontSize: 11,
-                                      height: 1.3,
-                                      color: widget.style.color?.withValues(
-                                        alpha: .55,
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ],
-                          ),
-                    interactive: true,
-                  ),
-                ),
-              ),
-            if (widget.bookTitle != null)
-              Positioned(
+                top: padding.top,
                 left: padding.left,
                 right: padding.right,
-                bottom:
-                    (padding.bottom - ReaderScrollLocation.extentOf(context))
-                        .clamp(0.0, double.infinity),
                 child: part(
                   information(
                     Row(
-                      key: key('reader-bottom-location'),
+                      key: key('reader-chapter-location'),
                       children: [
                         Expanded(
                           child: ReaderChapterTitle(
                             text: title,
-                            key: key('reader-bottom-chapter-title'),
-                            style: informationStyle,
+                            key: key('reader-chapter-title'),
+                            style: _chapterHeadingStyle(widget.style),
                             active: spread == _restingSpread,
                             chrome: widget.chrome,
                             showWithChrome: false,
@@ -1677,14 +1650,86 @@ class _ReaderPagedViewState extends State<ReaderPagedView>
                         ),
                         if (widget.showPageCount) ...[
                           const SizedBox(width: 12),
-                          AppText(
-                            count,
-                            key: key('reader-page-count', leaf: leaves - 1),
-                            maxLines: 1,
-                            style: informationStyle,
+                          IgnorePointer(
+                            child: AppText(
+                              count,
+                              key: key('reader-page-count', leaf: leaves - 1),
+                              maxLines: 1,
+                              textAlign: TextAlign.end,
+                              style: widget.style.copyWith(
+                                fontSize: 11,
+                                height: 1.3,
+                                color: widget.style.color?.withValues(
+                                  alpha: .55,
+                                ),
+                              ),
+                            ),
                           ),
                         ],
                       ],
+                    ),
+                    interactive: true,
+                  ),
+                ),
+              )
+            else if (widget.preferences.showsHeader)
+              Positioned(
+                top: ReaderInfoBar.headerTopFor(context, widget.preferences),
+                left: headerInsets.left,
+                right: headerInsets.right,
+                child: part(
+                  information(
+                    ReaderInfoBar(
+                      key: key('reader-chapter-location'),
+                      left: widget.preferences.headerLeft,
+                      middle: widget.preferences.headerMiddle,
+                      right: widget.preferences.headerRight,
+                      content: infoContent!,
+                      fontSize: widget.preferences.statusFontSize,
+                      color: infoColor,
+                      dividerColor: dividerColor,
+                      dividerAbove: false,
+                      statusBand: shareBand,
+                      bottomPadding: widget.preferences.headerMarginBottom,
+                      height: ReaderInfoBar.headerBandHeightFor(
+                        context,
+                        widget.preferences,
+                        dark: dark,
+                      ),
+                    ),
+                    interactive: true,
+                  ),
+                ),
+              ),
+            if (widget.bookTitle != null && widget.preferences.showsFooter)
+              Positioned(
+                left: footerInsets.left,
+                right: footerInsets.right,
+                bottom: ReaderInfoBar.footerBottomFor(context),
+                child: part(
+                  information(
+                    ReaderInfoBar(
+                      key: key('reader-bottom-location'),
+                      left: widget.preferences.footerLeft,
+                      middle: widget.preferences.footerMiddle,
+                      right: widget.preferences.footerRight,
+                      content: infoContent!,
+                      fontSize: widget.preferences.statusFontSize,
+                      color: infoColor,
+                      dividerColor: dividerColor,
+                      dividerAbove: true,
+                      topPadding: widget.preferences.footerMarginTop,
+                      bottomPadding: widget.preferences.footerMarginBottom,
+                      height: ReaderInfoBar.bottomExtentFor(
+                        context,
+                        widget.preferences,
+                        dark: dark,
+                      ),
+                      slotKeys: (
+                        left: key('reader-bottom-chapter-title'),
+                        middle: null,
+                        right: key('reader-page-count', leaf: leaves - 1),
+                      ),
                     ),
                   ),
                 ),
