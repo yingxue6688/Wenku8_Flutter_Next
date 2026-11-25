@@ -202,7 +202,7 @@ open class ReadingWidgetProvider(private val family: Int) : AppWidgetProvider() 
                             setViewVisibility(R.id.widget_rendered_date, View.VISIBLE)
                             setTextViewText(R.id.widget_rendered_date, content.footer)
                         }
-                        setContentDescription(R.id.widget_rendered_face, "轻小说文库。阅读 ${ReadingWidgetContent.minutes(content.todaySeconds)} 分钟，连续 ${content.streakText} 天。${content.footer}")
+                        setContentDescription(R.id.widget_rendered_face, "轻之国度。阅读 ${ReadingWidgetContent.minutes(content.todaySeconds)} 分钟，连续 ${content.streakText} 天。${content.footer}")
                     }
                 val intent = Intent(context, ReaderActivity::class.java).apply {
                     flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP

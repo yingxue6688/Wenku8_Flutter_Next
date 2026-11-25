@@ -1055,7 +1055,7 @@ void main() {
     },
   );
 
-  for (final version in [5, 6, 7, 8, 9, 10, 11]) {
+  for (final version in [5, 6, 7, 8, 9, 10, 11, 12, 13, 14]) {
     test(
       'Duokan v$version imports discard stale full-page layout without changing text positions',
       () async {
@@ -1126,7 +1126,7 @@ void main() {
         expect(after.epubLayout?.blocks[1]?.fullPage ?? false, isFalse);
         expect(await layoutFile.exists(), isFalse);
         final updated = jsonDecode(await recordFile.readAsString()) as Map;
-        expect((updated['source'] as Map)['richLayout'], 12);
+        expect((updated['source'] as Map)['richLayout'], 15);
       },
     );
   }
@@ -1875,6 +1875,269 @@ void main() {
         image.rect.top,
         closeTo((390 - readerPublisherImageGutter * 2) * .45, .1),
       );
+    },
+  );
+
+  test(
+    'EPUB hyperlinks get default underline unless text-decoration is none, div blocks stay unindented, and standalone dash dividers gain spacing',
+    () async {
+      final book = parseLocalBook(
+        LocalBookInput(
+          'angel-colophon-toc.epub',
+          _buildRichEpub(
+            overrides: {
+              'OPS/book.opf': '''
+      <package unique-identifier="bookid">
+        <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+          <dc:identifier id="bookid">urn:uuid:angel-test-book</dc:identifier>
+          <dc:title>邻家天使测试</dc:title>
+          <dc:creator>佐伯さん</dc:creator>
+        </metadata>
+        <manifest>
+          <item id="css" href="styles/main.css" media-type="text/css"/>
+          <item id="toc_css" href="styles/toc.css" media-type="text/css"/>
+          <item id="toc_xhtml" href="text/TOC.xhtml" media-type="application/xhtml+xml"/>
+          <item id="title_xhtml" href="text/title.xhtml" media-type="application/xhtml+xml"/>
+          <item id="ch1" href="text/ch1.xhtml" media-type="application/xhtml+xml"/>
+          <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+          <item id="cover" href="images/cover.png" media-type="image/png"/>
+        </manifest>
+        <spine toc="ncx">
+          <itemref idref="toc_xhtml"/>
+          <itemref idref="title_xhtml"/>
+          <itemref idref="ch1"/>
+        </spine>
+      </package>
+    ''',
+              'OPS/toc.ncx': '''
+      <ncx><navMap>
+        <navPoint><navLabel><text>目录</text></navLabel><content src="text/TOC.xhtml"/></navPoint>
+        <navPoint><navLabel><text>制作信息</text></navLabel><content src="text/title.xhtml"/></navPoint>
+        <navPoint><navLabel><text>第一章</text></navLabel><content src="text/ch1.xhtml"/></navPoint>
+      </navMap></ncx>
+    ''',
+              'OPS/styles/toc.css': '''
+      div.sgc-toc-level-1 { margin-left: 0em; }
+      .no-d { text-decoration: none; }
+    ''',
+              'OPS/styles/main.css': '''
+      h1 { margin-bottom: 1.5em; }
+      div { margin: 0px; padding: 0px; text-align: justify; }
+      p { text-indent: 2em; }
+    ''',
+              'OPS/text/TOC.xhtml': '''
+      <html><head><link rel="stylesheet" href="../styles/toc.css"/></head>
+      <body>
+        <h1>目录</h1>
+        <div class="sgc-toc-level-1"><a href="../text/title.xhtml">制作信息</a></div>
+        <div class="sgc-toc-level-1"><a class="no-d" href="../text/ch1.xhtml">无下划线条目</a></div>
+        <div class="sgc-toc-level-1"><a href="../text/ch1.xhtml" style="color: #ff0000">自定义红字链接</a></div>
+      </body></html>
+    ''',
+              'OPS/text/title.xhtml': '''
+      <html><head><link rel="stylesheet" href="../styles/main.css"/></head>
+      <body>
+        <h1>制作信息</h1>
+        <div>书名：邻家天使</div>
+        <div>——————————————————</div>
+        <div>作者：佐伯さん</div>
+        <p>——正文中的双破折号不应拆开。</p>
+      </body></html>
+    ''',
+            },
+          ),
+        ),
+      );
+
+      final toc = await ReaderContent.parse(book.bodies[0]);
+      expect(toc.epubLayout!.leadingHeading!.style.fontScale, closeTo(1.8, 0.01));
+      expect(toc.epubLayout!.leadingHeading!.style.fontWeight, 500);
+      expect(toc.epubLayout!.leadingHeading!.style.marginTopEm, closeTo(0.95, 0.01));
+      expect(
+        toc.epubLayout!.leadingHeading!.style.marginBottomEm,
+        closeTo(5.0, 0.01),
+      );
+      expect(toc.epubLayout!.blocks[0]!.marginBottomEm, closeTo(0.4, 0.01));
+      expect(toc.epubLayout!.blocks[0]!.effectiveIndent(true), 0.0);
+      expect(toc.epubLayout!.spans[0]!.single.underline, isTrue);
+      expect(toc.epubLayout!.spans[0]!.single.textColor, isNull);
+      expect(toc.epubLayout!.spans[0]!.single.underlineColor, 0xFF002BFF);
+      expect(toc.formats[0]!.emphasis.single.mask & 4, 4);
+      expect(toc.epubLayout!.spans[1]!.single.underline, isFalse);
+      expect(toc.epubLayout!.spans[1]!.single.textColor, isNull);
+      expect(toc.epubLayout!.spans[1]!.single.underlineColor, isNull);
+      expect(
+        toc.epubLayout!.spans[1]!.single.footnoteId,
+        startsWith('epub-link:'),
+      );
+      expect(toc.formats[1]?.emphasis ?? const [], isEmpty);
+      expect(toc.epubLayout!.spans[2]!.single.underline, isTrue);
+      expect(toc.epubLayout!.spans[2]!.single.textColor, 0xFFFF0000);
+      expect(toc.epubLayout!.spans[2]!.single.underlineColor, isNull);
+
+      final colophon = await ReaderContent.parse(book.bodies[1]);
+      expect(
+        colophon.epubLayout!.leadingHeading!.style.marginBottomEm,
+        closeTo(2.7, 0.01),
+      );
+      expect(colophon.epubLayout!.blocks[0]!.marginBottomEm, 0.0);
+      expect(colophon.epubLayout!.blocks[0]!.effectiveIndent(true), 0.0);
+      final divider = colophon.epubLayout!.blocks[1]!;
+      expect(divider.fontScale, closeTo(0.68, 0.001));
+      expect(divider.letterSpacingEm, closeTo(0.28, 0.001));
+      expect(divider.effectiveIndent(true), 0.0);
+
+      final proseWithTwoDashes = colophon.epubLayout!.blocks[3];
+      expect(proseWithTwoDashes?.fontScale, isNull);
+      expect(proseWithTwoDashes?.letterSpacingEm, isNull);
+    },
+  );
+
+  testWidgets(
+    'local EPUB chapter with display:none heading renders without synthetic reader chapter title',
+    (tester) async {
+      SharedPreferences.setMockInitialValues({});
+      tester.view.physicalSize = const Size(390, 844);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final root = (await tester.runAsync(
+        () => Directory.systemTemp.createTemp('wenku-local-hidden-h1-'),
+      ))!;
+      addTearDown(() => root.delete(recursive: true));
+      LocalBookMedia.root = root;
+      final store = LocalBookStore(root);
+      addTearDown(store.dispose);
+      await tester.runAsync(store.load);
+      final cache = OfflineCacheStore(Directory('${root.path}/cache'));
+      addTearDown(cache.dispose);
+      final repo = OfflineNovelRepository(
+        remote: const DemoNovelRepository(),
+        cache: cache,
+        local: store,
+      );
+      addTearDown(repo.dispose);
+
+      final epubBytes = _buildRichEpub(
+        overrides: {
+          'OPS/toc.ncx': '''
+      <ncx><navMap>
+        <navPoint><navLabel><text>彩插</text></navLabel><content src="text/ch1.xhtml"/></navPoint>
+      </navMap></ncx>
+    ''',
+          'OPS/text/ch1.xhtml': '''
+      <html><head><link rel="stylesheet" href="../styles/main.css"/></head>
+      <body>
+        <h1 style="display:none;">彩插</h1>
+        <div class="duokan-image-single"><img src="../images/cover.png"/></div>
+      </body></html>
+    ''',
+        },
+      );
+      final book = (await tester.runAsync(
+        () => store.import(LocalBookInput('plates.epub', epubBytes)),
+      ))!;
+      final state = (await tester.runAsync(LibraryState.load))!;
+      addTearDown(state.dispose);
+
+      for (final mode in [ReaderMode.paged, ReaderMode.scroll]) {
+        await tester.runAsync(
+          () => state.setReaderPreferences(ReaderPreferences(mode: mode)),
+        );
+        await tester.pumpWidget(
+          MaterialApp(
+            debugShowCheckedModeBanner: false,
+            theme: novelTheme(Brightness.light),
+            home: ReaderPage(
+              novel: book,
+              initialChapter: 0,
+              state: state,
+              repository: repo,
+            ),
+          ),
+        );
+        for (var i = 0; i < 40; i++) {
+          await tester.runAsync(
+            () => Future<void>.delayed(const Duration(milliseconds: 10)),
+          );
+          await tester.pump(const Duration(milliseconds: 16));
+        }
+
+        if (mode == ReaderMode.paged) {
+          expect(find.byKey(const ValueKey('reader-chapter-title')), findsNothing);
+        } else {
+          expect(
+            tester.widget(find.byKey(const ValueKey('reader-chapter-title'))),
+            isA<SizedBox>(),
+          );
+        }
+        expect(find.text('彩插'), findsNothing);
+      }
+
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
+  test(
+    'mixed text-and-image plate chapter avoids double horizontal inset, applies br gap to next image, and paginates plates separately',
+    () async {
+      final book = parseLocalBook(
+        LocalBookInput(
+          'mixed-plates.epub',
+          _buildRichEpub(
+            overrides: {
+              'OPS/styles/main.css': '''
+                .illus { text-indent: 0em; text-align: center; display: block; }
+                p { text-indent: 2em; line-height: 1.3em; margin: 0.4em 0; }
+              ''',
+              'OPS/text/ch1.xhtml': '''
+                <html><head><link rel="stylesheet" href="../styles/main.css"/></head>
+                <body>
+                  <h1 style="display:none;">彩插</h1>
+                  <div class="duokan-image-single illus"><img src="../images/cover.png"/></div>
+                  <p><br/></p>
+                  <div class="duokan-image-single illus"><img src="../images/spread.png"/></div>
+                  <p><br/></p>
+                  <p>角色介绍文本。</p>
+                </body></html>
+              ''',
+            },
+            binaryOverrides: {
+              'OPS/images/spread.png': base64Decode(
+                'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+              ),
+            },
+          ),
+        ),
+      );
+      final content = await ReaderContent.parse(book.bodies.single);
+      expect(content.imageOnly, isFalse);
+      final url1 = readerIllustrationUrl(content.paragraphs[0])!;
+      final url2 = readerIllustrationUrl(content.paragraphs[1])!;
+      expect(content.epubLayout!.blocks[1]!.blankLinesEm, closeTo(1.0, 0.01));
+      expect(content.formats[1]!.spacing.leading, contains('1.0em'));
+
+      // Both images keep consistent full column width without double 24px inset,
+      // and a tall portrait plate does not crowd a second spread onto page 1 even
+      // on a 20:9 tall viewport where 486 + 19 + 243 = 748 < 800.
+      final pages = await paginateReader(
+        content: content,
+        size: const Size(340, 800),
+        style: const TextStyle(fontSize: 19, height: 1.5),
+        preferences: const ReaderPreferences(mode: ReaderMode.paged, margin: 24),
+        scaler: TextScaler.noScaling,
+        localImageSizes: {
+          url1: const Size(776, 1109),
+          url2: const Size(2867, 2048),
+        },
+        current: () => true,
+      );
+      expect(pages!.pages.length, greaterThanOrEqualTo(2));
+      expect(pages.pages.first.fragments, hasLength(1));
+      final firstImg = pages.pages.first.fragments.single;
+      expect(firstImg.paragraph, 0);
+      expect(firstImg.rect.width, closeTo(340, 0.1));
     },
   );
 }

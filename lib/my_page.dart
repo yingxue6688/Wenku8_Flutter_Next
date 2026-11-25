@@ -10,11 +10,11 @@ import 'dock_layout.dart';
 import 'feature_pages.dart';
 import 'library_state.dart';
 import 'offline_repository.dart';
+import 'online_features.dart';
 import 'pages.dart' show SettingsPage;
 import 'ui_notifiers.dart';
 import 'updates/app_updates.dart';
 import 'updates/update_page.dart';
-import 'wenku_features.dart';
 
 class MyPage extends StatelessWidget {
   const MyPage({
@@ -34,7 +34,7 @@ class MyPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final features = WenkuFeaturesScope.maybeOf(context);
+    final features = OnlineFeaturesScope.maybeOf(context);
     final updates = AppUpdatesScope.maybeOf(context);
     return GlassHeaderLayout(
       showHeader: showHeader,
@@ -63,7 +63,7 @@ class MyPage extends StatelessWidget {
                         ? null
                         : () => pushNovelPage<void>(
                             context,
-                            WenkuAccountPage(
+                            OnlineAccountPage(
                               account: account,
                               state: state,
                               repository: repository,
@@ -125,8 +125,8 @@ class MyPage extends StatelessWidget {
                             children: [
                               AppText(
                                 account?.authenticated == true
-                                    ? profile?.displayName ?? '文库账号'
-                                    : '登录文库账号',
+                                    ? profile?.displayName ?? '轻之国度账号'
+                                    : '登录轻之国度账号',
                                 style: const TextStyle(
                                   fontSize: 20,
                                   fontWeight: FontWeight.w600,
@@ -137,16 +137,16 @@ class MyPage extends StatelessWidget {
                                 account?.authenticated == true
                                     ? profile == null
                                           ? '账号已连接'
-                                          : '${profile.score} 积分 · ${profile.rank}${features?.shelfSync == null
+                                          : '${profile.coin} 轻币 · ${profile.levelName.isNotEmpty ? profile.levelName : 'LV.${profile.level}'}${features?.shelfSync == null
                                                 ? ''
                                                 : features!.shelfSync!.syncing
                                                 ? '\n书架正在同步'
                                                 : features.shelfSync!.error != null
                                                 ? '\n书架待同步 · ${features.shelfSync!.error}'
                                                 : features.shelfSync!.syncedAt != null
-                                                ? '\n书架已与文库同步'
+                                                ? '\n书架已与轻之国度同步'
                                                 : ''}'
-                                    : '轻小说文库账号 · 云书架与每日签到',
+                                    : '轻之国度账号 · 云书架与进度同步',
                                 style: TextStyle(
                                   fontSize: 12,
                                   height: 1.6,

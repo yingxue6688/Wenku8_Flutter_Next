@@ -39,6 +39,16 @@ class LocalImageLayout {
       maxHeight == null &&
       containerWidth == null &&
       containerInset == null;
+
+  LocalImageLayout get withoutContainerInset => containerInset == null
+      ? this
+      : LocalImageLayout(
+          width: width,
+          height: height,
+          maxWidth: maxWidth,
+          maxHeight: maxHeight,
+          containerWidth: containerWidth,
+        );
   String get suffix => isEmpty
       ? ''
       : '$_prefix${[if (width != null) 'w=$width', if (height != null) 'h=$height', if (maxWidth != null) 'mw=$maxWidth', if (maxHeight != null) 'mh=$maxHeight', if (containerWidth != null) 'cw=$containerWidth', if (containerInset != null) 'ci=$containerInset'].join(';')}-->';

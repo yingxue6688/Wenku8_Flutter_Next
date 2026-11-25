@@ -868,8 +868,8 @@ class EpubColorAdapter {
     }
     final hsl = HSLColor.fromColor(source);
     if (dark) {
-      if (hsl.lightness < 0.4) {
-        return hsl.withLightness(0.65).toColor().withValues(alpha: 0.75);
+      if (hsl.lightness < 0.55) {
+        return hsl.withLightness(0.68).toColor().withValues(alpha: 0.85);
       }
       if (hsl.lightness > 0.82) {
         return hsl.withLightness(0.38).toColor().withValues(alpha: 0.75);
@@ -1989,6 +1989,7 @@ EpubBlockStyle buildEpubBlockStyle(
   Map<html.Element, Map<String, String>> elementProps, {
   String? listMarker,
   List<List<String>>? tableRows,
+  bool documentHasParagraphs = false,
 }) {
   final tag = element.localName ?? 'p';
   var kind = switch (tag) {
@@ -2096,7 +2097,15 @@ EpubBlockStyle buildEpubBlockStyle(
   if (fontScale != null && (fontScale - 1.0).abs() < 0.03) {
     fontScale = null;
   }
-  final fontWeight = _parseFontWeight(mergedProps['font-weight']);
+  var fontWeight = _parseFontWeight(mergedProps['font-weight']);
+  if (tag == 'h1') {
+    if (!mergedProps.containsKey('font-size') && fontScale == null) {
+      fontScale = 1.8;
+    }
+    if (!mergedProps.containsKey('font-weight') && fontWeight == null) {
+      fontWeight = 500;
+    }
+  }
   final italic =
       mergedProps['font-style']?.toLowerCase().contains('italic') == true ||
       mergedProps['font-style']?.toLowerCase().contains('oblique') == true;
@@ -2104,9 +2113,19 @@ EpubBlockStyle buildEpubBlockStyle(
       ? null
       : _firstFontFamily(mergedProps['font-family']!);
   final textAlign = _parseTextAlign(mergedProps['text-align']);
-  final textIndentEm = mergedProps.containsKey('text-indent')
+  var textIndentEm = mergedProps.containsKey('text-indent')
       ? (_parseEmOrScale(mergedProps['text-indent']) ?? 0.0).clamp(0.0, 6.0)
       : null;
+  if (textIndentEm == null &&
+      tag == 'div' &&
+      (documentHasParagraphs ||
+          element.classes.isNotEmpty ||
+          (elementProps[element]?.isNotEmpty ?? false) ||
+          element.querySelector('a[href]') != null)) {
+    // Standard XHTML/Duokan CSS applies `text-indent: 2em` to `<p>` rather
+    // than `<div>`; keep metadata/TOC/divider `<div>` blocks flush unless indented.
+    textIndentEm = 0.0;
+  }
 
   double? lineHeight;
   if (mergedProps['line-height'] case final lhRaw?) {
@@ -2350,6 +2369,51 @@ EpubBlockStyle buildEpubBlockStyle(
     }
   }
 
+  final hasExplicitTopMargin =
+      mergedProps.containsKey('margin') ||
+      mergedProps.containsKey('margin-top') ||
+      mergedProps.containsKey('margin-block') ||
+      mergedProps.containsKey('margin-block-start');
+  final hasExplicitBottomMargin =
+      mergedProps.containsKey('margin') ||
+      mergedProps.containsKey('margin-bottom') ||
+      mergedProps.containsKey('margin-block') ||
+      mergedProps.containsKey('margin-block-end');
+  if (!hasExplicitTopMargin &&
+      marginTopEm == 0 &&
+      !relativeInsets.containsKey('margin-top')) {
+    marginTopEm = switch (tag) {
+      'h1' => 0.95,
+      'h2' => 0.85,
+      'h3' => 0.7,
+      'h4' || 'h5' || 'h6' => 0.5,
+      _ => marginTopEm,
+    };
+  }
+  if (!hasExplicitBottomMargin &&
+      marginBottomEm == 0 &&
+      !relativeInsets.containsKey('margin-bottom')) {
+    marginBottomEm = switch (tag) {
+      'h1' => 5.0,
+      'h2' => 1.0,
+      'h3' => 0.8,
+      'h4' || 'h5' || 'h6' => 0.6,
+      _ => marginBottomEm,
+    };
+  }
+  if (tag == 'div' &&
+      kind == EpubBlockKind.paragraph &&
+      !hasExplicitTopMargin &&
+      !hasExplicitBottomMargin &&
+      marginTopEm == 0 &&
+      marginBottomEm == 0 &&
+      !relativeInsets.containsKey('margin-top') &&
+      !relativeInsets.containsKey('margin-bottom') &&
+      (_hasClass(element, RegExp(r'toc', caseSensitive: false)) ||
+          element.querySelector('a[href]') != null)) {
+    marginBottomEm = 0.4;
+  }
+
   return EpubBlockStyle(
     kind: kind,
     horizontalBleed: horizontalBleed,
@@ -2517,21 +2581,35 @@ class _InlineContext {
         tag == 'dfn' ||
         styleProp.contains('italic') ||
         styleProp.contains('oblique');
+    final mergedFootnoteId = footnoteId ?? this.footnoteId;
+    final isRealFootnote =
+        mergedFootnoteId != null &&
+        !mergedFootnoteId.startsWith('epub-link:') &&
+        !mergedFootnoteId.startsWith('epub-action:');
     final decProp = props?['text-decoration']?.toLowerCase() ?? '';
+    final decTokens = decProp.split(RegExp(r'\s+'));
+    final explicitNoDecoration = decTokens.contains('none');
+    final isHyperlink =
+        tag == 'a' && el.attributes['href'] != null && !isRealFootnote;
     final borderBottom = _parseBorderSide(props?['border-bottom']);
     final hasBorderBottom =
         borderBottom.width > 0 ||
         ((_parseEmOrScale(props?['border-bottom-width']) ?? 0) > 0);
     final isUnderline =
-        underline ||
+        hasBorderBottom ||
+        decProp.contains('underline') ||
         tag == 'u' ||
         tag == 'ins' ||
-        decProp.contains('underline') ||
-        hasBorderBottom;
+        (!explicitNoDecoration && (underline || isHyperlink));
+    final color = _parseCssColor(props?['color']) ?? textColor;
+    const defaultHyperlinkUnderlineColor = 0xFF002BFF;
     final uColor =
         _parseCssColor(props?['border-bottom-color']) ??
         borderBottom.color ??
-        underlineColor;
+        underlineColor ??
+        (isHyperlink && !explicitNoDecoration && color == null
+            ? defaultHyperlinkUnderlineColor
+            : null);
     final uStyle =
         props?['border-bottom-style']?.toLowerCase() ??
         borderBottom.style ??
@@ -2543,19 +2621,14 @@ class _InlineContext {
         ? borderPadding!.bottom.clamp(0.18, 2.0)
         : underlineOffsetEm;
     final isStrike =
-        strike ||
         tag == 's' ||
         tag == 'del' ||
         tag == 'strike' ||
-        decProp.contains('line-through');
+        decProp.contains('line-through') ||
+        (!explicitNoDecoration && strike);
     final isCode =
         code || tag == 'code' || tag == 'kbd' || tag == 'samp' || tag == 'tt';
     final vAlign = props?['vertical-align']?.toLowerCase() ?? '';
-    final mergedFootnoteId = footnoteId ?? this.footnoteId;
-    final isRealFootnote =
-        mergedFootnoteId != null &&
-        !mergedFootnoteId.startsWith('epub-link:') &&
-        !mergedFootnoteId.startsWith('epub-action:');
     final isSup =
         superscript ||
         tag == 'sup' ||
@@ -2568,7 +2641,6 @@ class _InlineContext {
     final family = props?['font-family'] != null
         ? _firstFontFamily(props!['font-family']!) ?? fontFamily
         : fontFamily;
-    final color = _parseCssColor(props?['color']) ?? textColor;
     final bg =
         _parseCssColor(props?['background-color']) ??
         _parseCssColor(props?['background']) ??
@@ -2658,6 +2730,8 @@ bool _isFullPageImageElement(html.Element img) {
   return false;
 }
 
+final _standaloneDashDividerPattern = RegExp(r'^[\u2014\u2015\u2500]{4,}$');
+
 /// Walks an EPUB XHTML `document` and invokes `onChapter` for each chapter
 /// section split by `boundaries`.
 void parseEpubDocumentChapters({
@@ -2687,6 +2761,7 @@ void parseEpubDocumentChapters({
 }) {
   var label = initialLabel;
   var origin = '$filePath#';
+  final documentHasParagraphs = document.querySelector('p') != null;
   final heading = document
       .querySelector(
         'h1, h2, h3, .duokan-maintitle, .chapter-title, .title-main, .ctitle',
@@ -2792,6 +2867,20 @@ void parseEpubDocumentChapters({
           blankLinesEm: base.blankLinesEm + pendingBlankLinesEm,
         );
         pendingBlankLinesEm = 0.0;
+      }
+      if (!isLineBreak &&
+          _standaloneDashDividerPattern.hasMatch(value) &&
+          styleForEmit?.fontScale == null &&
+          styleForEmit?.letterSpacingEm == null) {
+        // CJK sans/system UI fonts often join consecutive U+2014 dashes into a
+        // solid bar; spacing slightly separates standalone divider dashes while
+        // keeping ordinary two-dash prose marks untouched.
+        final base = styleForEmit ?? const EpubBlockStyle();
+        styleForEmit = base.copyWith(
+          fontScale: 0.68,
+          letterSpacingEm: 0.28,
+          textIndentEm: base.textIndentEm ?? 0.0,
+        );
       }
       final parts = splitBoundedParagraphs(value).toList();
       var offset = 0;
@@ -3156,6 +3245,13 @@ void parseEpubDocumentChapters({
             imageTapTargets: navColumnTargets,
           );
         }
+        if (pendingBlankLinesEm > 0) {
+          final base = blocks[idx] ?? const EpubBlockStyle();
+          blocks[idx] = base.copyWith(
+            blankLinesEm: base.blankLinesEm + pendingBlankLinesEm,
+          );
+          pendingBlankLinesEm = 0.0;
+        }
       }
       return;
     }
@@ -3224,6 +3320,7 @@ void parseEpubDocumentChapters({
         node,
         styleRules.elementProps,
         listMarker: liMarker,
+        documentHasParagraphs: documentHasParagraphs,
       );
       if (hasChildBlocks) {
         containerStyle = computedStyle;

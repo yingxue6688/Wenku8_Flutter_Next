@@ -8,11 +8,19 @@ import 'book_search.dart';
 import 'offline_cache.dart';
 import 'local_books.dart';
 import 'network_status.dart';
-import 'legacy_transport.dart';
+import 'online_component.dart' show OnlineAuthenticationRequired;
+import 'online_media.dart' show OnlineMedia, normalizeOnlineImageKey;
+import 'publication_catalog.dart';
 import 'reader_content.dart'
     show ReaderContent, readerHasMissingIllustrations, readerIllustrationUrl;
 import 'ui_notifiers.dart';
 import 'tag_catalogue.dart';
+
+export 'catalog.dart'
+    show
+        LockedChapterException,
+        isLockedChapterPreview,
+        lockedChapterPreviewSentinel;
 
 enum DownloadPhase {
   queued,
@@ -30,6 +38,7 @@ class ChapterDownload {
   final CacheEpoch epoch;
   DownloadPhase phase = DownloadPhase.queued;
   int completed = 0;
+  int skippedLocked = 0;
   int total = 0;
   int illustrations = 0;
   bool cachingIllustrations = false;
@@ -50,7 +59,9 @@ class ChapterDownload {
           ? '已缓存 $completed / $total 章 · 正在缓存插图'
           : '已缓存 $completed / $total 章',
     DownloadPhase.completed =>
-      '缓存完成 · $completed 章${illustrations > 0 ? ' · $illustrations 张插图' : ''}',
+      '缓存完成 · $completed 章'
+          '${illustrations > 0 ? ' · $illustrations 张插图' : ''}'
+          '${skippedLocked > 0 ? ' · 跳过 $skippedLocked 个付费章' : ''}',
     DownloadPhase.cancelled => '已取消 · 保留已缓存章节',
     DownloadPhase.failed =>
       failedChapter == null
@@ -71,7 +82,13 @@ class _ChapterRequest {
 /// Adds persistent offline reading without changing the remote request contract.
 /// Download notifications are independent of appearance/reader state updates.
 class OfflineNovelRepository extends FrameChangeNotifier
-    implements NovelRepository, ProgressiveTagCatalogue {
+    implements
+        NovelRepository,
+        ProgressiveTagCatalogue,
+        PublicationCatalog,
+        FilteredNovelRepository,
+        SiteFeedFilterCatalog,
+        CachedBookPeekCatalog {
   OfflineNovelRepository({
     required this.remote,
     required this.cache,
@@ -80,8 +97,7 @@ class OfflineNovelRepository extends FrameChangeNotifier
     Future<Uint8List> Function(String url)? illustrationRequest,
   }) : _illustrationRequest =
            illustrationRequest ??
-           ((url) =>
-               LegacyTransport.illustration(url, cacheForViewing: false)) {
+           ((url) => OnlineMedia.illustration(url, cacheForViewing: false)) {
     cache.addListener(_cacheChanged);
     local?.addListener(_cacheChanged);
   }
@@ -155,6 +171,94 @@ class OfflineNovelRepository extends FrameChangeNotifier
     int page = 1,
     bool refresh = false,
   }) => remote.browse(sort: sort, page: page, refresh: refresh);
+
+  @override
+  Future<List<PublicationLibrary>> publicationLibraries({
+    bool refresh = false,
+  }) => switch (remote) {
+    final PublicationCatalog catalog => catalog.publicationLibraries(
+      refresh: refresh,
+    ),
+    _ => Future.value(const [
+      PublicationLibrary(1, '轻小说'),
+      PublicationLibrary(2, '原创'),
+      PublicationLibrary(3, '同人'),
+      PublicationLibrary(4, 'EPUB'),
+    ]),
+  };
+
+  @override
+  Future<NovelPage> browsePublication(
+    int libraryId, {
+    int page = 1,
+    bool refresh = false,
+  }) => browsePublicationFiltered(
+    libraryId,
+    filter: const FeedFilter(),
+    page: page,
+    refresh: refresh,
+  );
+
+  @override
+  Future<NovelPage> browseFiltered({
+    NovelSort sort = NovelSort.lastUpdate,
+    FeedFilter filter = const FeedFilter(),
+    int page = 1,
+    bool refresh = false,
+  }) => switch (remote) {
+    final FilteredNovelRepository filtered => filtered.browseFiltered(
+      sort: sort,
+      filter: filter,
+      page: page,
+      refresh: refresh,
+    ),
+    _ => remote.browse(sort: sort, page: page, refresh: refresh),
+  };
+
+  @override
+  Future<NovelPage> browsePublicationFiltered(
+    int libraryId, {
+    FeedFilter filter = const FeedFilter(),
+    int page = 1,
+    bool refresh = false,
+  }) => switch (remote) {
+    final FilteredNovelRepository filtered => filtered.browsePublicationFiltered(
+      libraryId,
+      filter: filter,
+      page: page,
+      refresh: refresh,
+    ),
+    final PublicationCatalog catalog => catalog.browsePublication(
+      libraryId,
+      page: page,
+      refresh: refresh,
+    ),
+    _ => throw UnsupportedError('Remote repository does not support channels'),
+  };
+
+  @override
+  FeedFilterSchema? cachedFeedFilters({
+    NovelSort? sort,
+    PublicationLibrary? publication,
+  }) => switch (remote) {
+    final SiteFeedFilterCatalog catalog => catalog.cachedFeedFilters(
+      sort: sort,
+      publication: publication,
+    ),
+    _ => null,
+  };
+
+  @override
+  Future<FeedFilterSchema> loadFeedFilters({
+    NovelSort? sort,
+    PublicationLibrary? publication,
+  }) => switch (remote) {
+    final SiteFeedFilterCatalog catalog => catalog.loadFeedFilters(
+      sort: sort,
+      publication: publication,
+    ),
+    _ => Future.value(const FeedFilterSchema.unsupported()),
+  };
   @override
   Future<NovelPage> searchPage(
     String query, {
@@ -254,6 +358,39 @@ class OfflineNovelRepository extends FrameChangeNotifier
     return book;
   }
 
+  /// Synchronously peeks cached book metadata across local storage, disk index,
+  /// in-memory cache, and [remote] without issuing network calls.
+  Novel? peekCachedDetail(int id) {
+    if (isLocalBook(id)) return local?.book(id);
+    return cache.book(id)?.novel ??
+        _known[id] ??
+        switch (remote) {
+          final CachedBookPeekCatalog peek => peek.cachedDetail(id),
+          _ => null,
+        };
+  }
+
+  /// Synchronously peeks cached directory chapters when already in memory or
+  /// the loaded offline disk index.
+  List<NovelChapter>? peekCachedChapters(int id) {
+    if (isLocalBook(id)) {
+      final chapters = local?.book(id)?.chapters;
+      return chapters != null && chapters.isNotEmpty ? chapters : null;
+    }
+    final saved = cache.book(id)?.novel;
+    if (saved != null && saved.chapters.isNotEmpty) return saved.chapters;
+    return switch (remote) {
+      final CachedBookPeekCatalog peek => peek.cachedChapters(id),
+      _ => null,
+    };
+  }
+
+  @override
+  Novel? cachedDetail(int id) => peekCachedDetail(id);
+
+  @override
+  List<NovelChapter>? cachedChapters(int id) => peekCachedChapters(id);
+
   /// Explicitly refresh old bodies that predate illustration support. A failed
   /// request keeps the previous offline body; no cache purge is necessary.
   Future<String> refreshChapterContent(int id, NovelChapter chapter) async {
@@ -264,6 +401,9 @@ class OfflineNovelRepository extends FrameChangeNotifier
     try {
       final previous = await cache.readChapter(id, chapter.id);
       final text = await _fetch(id, chapter, request);
+      if (chapter.isLocked || isLockedChapterPreview(text)) {
+        return text;
+      }
       if (previous != null &&
           readerHasMissingIllustrations(previous) &&
           !_hasIllustration(text)) {
@@ -297,7 +437,7 @@ class OfflineNovelRepository extends FrameChangeNotifier
     int id,
     NovelChapter chapter,
   ) async {
-    if (chapter.id <= 0 || offline) return null;
+    if (chapter.id <= 0 || chapter.isLocked || offline) return null;
     final epoch = cache.epochFor(id);
     final request = _retainRequest(id, chapter.id, epoch);
     try {
@@ -307,7 +447,9 @@ class OfflineNovelRepository extends FrameChangeNotifier
         return null;
       }
       final repaired = await _fetch(id, chapter, request);
-      if (!_hasIllustration(repaired)) return null;
+      if (isLockedChapterPreview(repaired) || !_hasIllustration(repaired)) {
+        return null;
+      }
       await _saveBody(id, chapter.id, repaired, epoch);
       return repaired;
     } catch (_) {
@@ -410,6 +552,10 @@ class OfflineNovelRepository extends FrameChangeNotifier
         saved.coverUrl == novel.coverUrl &&
         saved.isComplete == novel.isComplete &&
         saved.lastUpdate == novel.lastUpdate &&
+        saved.illustrator == novel.illustrator &&
+        saved.rating == novel.rating &&
+        saved.wordCount == novel.wordCount &&
+        saved.badge == novel.badge &&
         _sameDirectory(saved.chapters, novel.chapters)) {
       return;
     }
@@ -423,7 +569,9 @@ class OfflineNovelRepository extends FrameChangeNotifier
       if (a[index].id != b[index].id ||
           a[index].title != b[index].title ||
           a[index].volumeId != b[index].volumeId ||
-          a[index].volumeTitle != b[index].volumeTitle) {
+          a[index].volumeTitle != b[index].volumeTitle ||
+          a[index].isLocked != b[index].isLocked ||
+          a[index].coinPrice != b[index].coinPrice) {
         return false;
       }
     }
@@ -477,13 +625,14 @@ class OfflineNovelRepository extends FrameChangeNotifier
     // A concurrent cache miss must not re-fetch a just-completed response.
     final request = _retainRequest(novelId, chapter.id, epoch);
     try {
-      final saved = await cache.readChapter(novelId, chapter.id);
-      if (saved != null) return saved;
-      if (saved != null && offline) {
-        throw const FormatException('本章旧缓存被插图标记截断，请联网刷新本章；原缓存仍保留');
+      if (!chapter.isLocked) {
+        final saved = await cache.readChapter(novelId, chapter.id);
+        if (saved != null && !isLockedChapterPreview(saved)) return saved;
       }
       final text = await _fetch(novelId, chapter, request);
-      await _saveBody(novelId, chapter.id, text, epoch);
+      if (!chapter.isLocked && !isLockedChapterPreview(text)) {
+        await _saveBody(novelId, chapter.id, text, epoch);
+      }
       return text;
     } finally {
       _releaseRequest(request);
@@ -561,11 +710,21 @@ class OfflineNovelRepository extends FrameChangeNotifier
           .where((c) => job.chapterIds?.contains(c.id) ?? true)
           .toList();
       if (selected.isEmpty) throw const FormatException('选择的章节已不在目录中');
-      job.total = selected.length;
+      final downloadable = <NovelChapter>[];
+      var skippedLocked = 0;
+      for (final chapter in selected) {
+        if (chapter.isLocked) {
+          skippedLocked++;
+        } else {
+          downloadable.add(chapter);
+        }
+      }
+      job.skippedLocked = skippedLocked;
+      job.total = downloadable.length;
       job.phase = DownloadPhase.downloading;
       _changed(job.novel.id);
       final cachedIllustrations = <String>{};
-      for (final chapter in selected) {
+      for (final chapter in downloadable) {
         if (!_current(job)) return;
         job.failedChapter = chapter.title;
         job.cachingIllustrations = false;
@@ -573,10 +732,37 @@ class OfflineNovelRepository extends FrameChangeNotifier
         try {
           final saved = await cache.readChapter(meta.id, chapter.id);
           if (!_current(job)) return;
-          var text = saved;
+          var text = saved != null && !isLockedChapterPreview(saved)
+              ? saved
+              : null;
           if (text == null || readerHasMissingIllustrations(text)) {
-            text = await _fetch(meta.id, chapter, request);
-            if (saved != null && readerHasMissingIllustrations(text)) {
+            final String fetched;
+            try {
+              fetched = await _fetch(meta.id, chapter, request);
+            } on LockedChapterException {
+              if (!_current(job)) return;
+              job.skippedLocked++;
+              if (job.total > 0) job.total--;
+              _changed(job.novel.id);
+              continue;
+            } on OnlineAuthenticationRequired {
+              if (!_current(job)) return;
+              job.skippedLocked++;
+              if (job.total > 0) job.total--;
+              _changed(job.novel.id);
+              continue;
+            }
+            if (!_current(job)) return;
+            if (isLockedChapterPreview(fetched)) {
+              job.skippedLocked++;
+              if (job.total > 0) job.total--;
+              _changed(job.novel.id);
+              continue;
+            }
+            text = fetched;
+            if (saved != null &&
+                !isLockedChapterPreview(saved) &&
+                readerHasMissingIllustrations(text)) {
               job.cachingIllustrations = true;
               throw const FormatException('本章插图地址暂未完整返回，原有正文已保留，请稍后继续缓存');
             }
@@ -600,8 +786,9 @@ class OfflineNovelRepository extends FrameChangeNotifier
               : const <String>{};
           for (final url in images) {
             if (!_current(job)) return;
+            final imageKey = normalizeOnlineImageKey(url);
             if (url.startsWith('wenku-local:') ||
-                cachedIllustrations.contains(url)) {
+                cachedIllustrations.contains(imageKey)) {
               continue;
             }
             job.cachingIllustrations = true;
@@ -624,7 +811,7 @@ class OfflineNovelRepository extends FrameChangeNotifier
               if (!_current(job)) return;
               if (!stored) throw StateError('书籍缓存已移除');
             }
-            cachedIllustrations.add(url);
+            cachedIllustrations.add(imageKey);
             job.illustrations++;
           }
           if (!_current(job)) return;

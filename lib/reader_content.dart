@@ -60,7 +60,7 @@ class ReaderContent {
         ? 'publisher-spacing-v1|$base'
         : base;
     final withRich = epubLayout != null && !epubLayout!.isEmpty
-        ? 'epub-rich-layout-v12|$layout'
+        ? 'epub-rich-layout-v16|$layout'
         : layout;
     return languageFilter.isEmpty
         ? withRich
@@ -114,6 +114,29 @@ class ReaderContent {
     if (epubLayout case final layout?) {
       yield* layout.inlineImageUrls;
     }
+  }
+
+  ReaderContent withLeadingHeading(EpubHeadingBlock heading) {
+    final base = epubLayout;
+    return ReaderContent(
+      paragraphs,
+      readingOrder: readingOrder,
+      inlineOwners: inlineOwners,
+      placementIds: placementIds,
+      formats: formats,
+      notes: notes,
+      revision: revision,
+      coordinateMap: coordinateMap,
+      languageFilter: languageFilter,
+      epubLayout: EpubChapterLayout(
+        blocks: base?.blocks ?? const {},
+        spans: base?.spans ?? const {},
+        footnotes: base?.footnotes ?? const {},
+        leadingHeading: heading,
+        bodyFontFamily: base?.bodyFontFamily,
+        embeddedFonts: base?.embeddedFonts ?? const {},
+      ),
+    );
   }
 
   ReaderContent localized(Locale locale) {

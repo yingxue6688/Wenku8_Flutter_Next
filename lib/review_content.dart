@@ -203,31 +203,29 @@ class _ReviewContentState extends State<ReviewContent>
               )..layout(maxWidth: constraints.maxWidth);
               final hasMore = painter.didExceedMaxLines;
               painter.dispose();
+              final noMotion =
+                  widget.reduceMotion ||
+                  MediaQuery.disableAnimationsOf(context);
+              final prose = ReadOnlyText.rich(
+                body,
+                textKey: const ValueKey('review-prose'),
+                maxLines: _expanded ? null : _previewLines,
+                overflow: _expanded
+                    ? TextOverflow.clip
+                    : TextOverflow.ellipsis,
+              );
               return Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  AnimatedSize(
-                    duration:
-                        widget.reduceMotion ||
-                            MediaQuery.disableAnimationsOf(context)
-                        ? Duration.zero
-                        : NovelMotion.enter,
-                    reverseDuration:
-                        widget.reduceMotion ||
-                            MediaQuery.disableAnimationsOf(context)
-                        ? Duration.zero
-                        : NovelMotion.exit,
-                    alignment: Alignment.topLeft,
-                    curve: NovelMotion.ease,
-                    child: ReadOnlyText.rich(
-                      body,
-                      textKey: const ValueKey('review-prose'),
-                      maxLines: _expanded ? null : _previewLines,
-                      overflow: _expanded
-                          ? TextOverflow.clip
-                          : TextOverflow.ellipsis,
-                    ),
-                  ),
+                  noMotion
+                      ? prose
+                      : AnimatedSize(
+                          duration: NovelMotion.enter,
+                          reverseDuration: NovelMotion.exit,
+                          alignment: Alignment.topLeft,
+                          curve: NovelMotion.ease,
+                          child: prose,
+                        ),
                   if (hasMore) ...[
                     const SizedBox(height: 6),
                     JellyTapSurface(
@@ -251,9 +249,7 @@ class _ReviewContentState extends State<ReviewContent>
                             const SizedBox(width: 7),
                             AnimatedRotation(
                               turns: _expanded ? .5 : 0,
-                              duration:
-                                  widget.reduceMotion ||
-                                      MediaQuery.disableAnimationsOf(context)
+                              duration: noMotion
                                   ? Duration.zero
                                   : NovelMotion.enter,
                               curve: NovelMotion.ease,

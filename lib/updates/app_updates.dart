@@ -7,7 +7,6 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import '../legacy_transport.dart';
 
 export 'current_release_content.dart'
     show currentReleaseNotes, publicReleaseNotes;
@@ -604,11 +603,7 @@ class AppUpdates extends ChangeNotifier {
        platform = platform ?? AndroidUpdatePlatform(),
        _directory = directory ?? getTemporaryDirectory,
        _clock = clock ?? DateTime.now,
-       _networkPriority =
-           networkPriority ??
-           (Platform.isAndroid
-               ? LegacyTransport.setUpdatePriority
-               : (_) async {});
+       _networkPriority = networkPriority ?? ((_) async {});
   final SharedPreferences preferences;
   final bool packageUpdates;
 

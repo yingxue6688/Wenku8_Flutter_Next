@@ -63,7 +63,7 @@ Future<String?> _capture(Novel book, String reference) async {
     }
     source = LocalBookMedia.peek(url) ?? await LocalBookMedia.loadCover(url);
   } else {
-    source = LegacyCover.peek(book.id);
+    source = LegacyCover.peek(book.id, url: url);
   }
   if (source == null || source.isEmpty || source.length > _maxSourceBytes) {
     return null;

@@ -1354,7 +1354,7 @@ Widget sectionHeader(BuildContext context, String title, String subtitle) =>
       title: title,
       subtitle: subtitle,
       code: switch (title) {
-        '更多书籍' => '02 / ARCHIVE INDEX',
+        '更多书籍' || '全部书目' => '02 / ARCHIVE INDEX',
         '简介' => '01 / SYNOPSIS',
         '目录' => '02 / CONTENTS',
         '使用方式' => '00 / READING MODE',
@@ -1587,7 +1587,7 @@ class NovelCover extends StatelessWidget {
                 )?.animation ??
                 animation,
             imageProvider: switch (LocalBookMedia.peek(novel.coverUrl) ??
-                LegacyCover.peek(novel.id)) {
+                LegacyCover.peek(novel.id, url: novel.coverUrl)) {
               final bytes? => ResizeImage.resizeIfNeeded(
                 novelCoverDecodeWidth(
                   flightWidth,
@@ -1674,7 +1674,7 @@ class NovelCover extends StatelessWidget {
                     : LegacyCover.bytes(novel.id, url: novel.coverUrl),
                 initialData:
                     LocalBookMedia.peek(novel.coverUrl) ??
-                    LegacyCover.peek(novel.id),
+                    LegacyCover.peek(novel.id, url: novel.coverUrl),
                 builder: (context, snapshot) {
                   final bytes = snapshot.data;
                   if (bytes == null) {

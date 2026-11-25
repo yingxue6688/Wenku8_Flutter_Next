@@ -2,8 +2,6 @@ package org.mewx.wenku8_flutter
 
 import android.content.Intent
 import android.net.Uri
-import android.os.Handler
-import android.os.Looper
 import java.io.File
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.engine.plugins.FlutterPlugin
@@ -21,6 +19,7 @@ internal fun attachWenkuEnginePlugins(engine: FlutterEngine) {
     if (!engine.plugins.has(LanReadingConfigPlugin::class.java)) engine.plugins.add(LanReadingConfigPlugin())
     if (!engine.plugins.has(LanDiscoveryPlugin::class.java)) engine.plugins.add(LanDiscoveryPlugin())
     if (!engine.plugins.has(WenkuHostPlugin::class.java)) engine.plugins.add(WenkuHostPlugin())
+    if (!engine.plugins.has(OnlineSessionPlugin::class.java)) engine.plugins.add(OnlineSessionPlugin())
     if (!engine.plugins.has(SystemSpeechPlugin::class.java)) engine.plugins.add(SystemSpeechPlugin())
     if (!engine.plugins.has(AppUpdatePlugin::class.java)) engine.plugins.add(AppUpdatePlugin())
     if (!engine.plugins.has(CustomSpeechConfigPlugin::class.java)) engine.plugins.add(CustomSpeechConfigPlugin())
@@ -31,8 +30,6 @@ internal fun attachWenkuEnginePlugins(engine: FlutterEngine) {
 }
 
 class WenkuHostPlugin : FlutterPlugin, ActivityAware, PluginRegistry.ActivityResultListener, PluginRegistry.RequestPermissionsResultListener, PluginRegistry.NewIntentListener {
-    private var api: Wenku8Bridge? = null
-    private var apiChannel: MethodChannel? = null
     private var toolsChannel: MethodChannel? = null
     private var tools: LocalTools? = null
     private var documents: BookDocuments? = null
@@ -42,11 +39,6 @@ class WenkuHostPlugin : FlutterPlugin, ActivityAware, PluginRegistry.ActivityRes
     private var activityBinding: ActivityPluginBinding? = null
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
-        val main = Handler(Looper.getMainLooper())
-        api = Wenku8Bridge(binding.applicationContext) { main.post(it) }
-        apiChannel = MethodChannel(binding.binaryMessenger, "org.mewx.wenku8/legacy_api").also {
-            it.setMethodCallHandler(api)
-        }
         val resolver = binding.applicationContext.contentResolver
         bookImports = BookDocumentImportSession(File(binding.applicationContext.noBackupFilesDir, "book-import-staging")) { uri, target, max ->
             copySelectedBookDocument(resolver, uri, target, max)
@@ -63,7 +55,7 @@ class WenkuHostPlugin : FlutterPlugin, ActivityAware, PluginRegistry.ActivityRes
             it.setMethodCallHandler { call, result ->
                 val attached = documents
                 if (attached != null) attached.onMethodCall(call, result)
-                else result.error("NO_ACTIVITY", "请在文库页面执行文件操作", null)
+                else result.error("NO_ACTIVITY", "请在书架页面执行文件操作", null)
             }
         }
     }
@@ -72,9 +64,6 @@ class WenkuHostPlugin : FlutterPlugin, ActivityAware, PluginRegistry.ActivityRes
         bookImports?.close()
         bookImports = null
         bookOpens = null
-        apiChannel?.setMethodCallHandler(null)
-        api?.close()
-        api = null
         toolsChannel?.setMethodCallHandler(null)
         documentsChannel?.setMethodCallHandler(null)
     }

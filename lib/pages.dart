@@ -73,6 +73,7 @@ import 'network_status.dart';
 import 'novel_feed_controller.dart';
 import 'offline_repository.dart';
 import 'offline_widgets.dart';
+import 'publication_catalog.dart';
 import 'low_performance_page.dart';
 import 'frame_rate_settings.dart';
 import 'reader_catalogue.dart';
@@ -88,6 +89,7 @@ import 'reader_chapter_heading.dart';
 import 'reader_rich_content.dart';
 import 'reader_scroll_stream.dart';
 import 'discovery_filters.dart';
+import 'discovery_ui.dart';
 import 'dock_layout.dart';
 import 'reader_follow_scroll.dart';
 import 'reader_listening_follow.dart';
@@ -123,9 +125,13 @@ import 'recent_searches.dart';
 import 'ui_notifiers.dart';
 import 'route_identity.dart';
 import 'feature_pages.dart';
-import 'wenku_features.dart';
-import 'legacy_import_page.dart';
-import 'legacy_transport.dart';
+import 'legacy_cover.dart';
+import 'lightnovel/lightnovel_account.dart';
+import 'lightnovel/lightnovel_client.dart';
+import 'lightnovel/lightnovel_content.dart';
+import 'lightnovel/lightnovel_repository.dart';
+import 'online_component.dart';
+import 'online_features.dart';
 import 'review_pages.dart';
 
 export 'app_ui.dart' show sectionHeader;
@@ -847,12 +853,12 @@ class HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
                     title: switch (_searchScope) {
                       1 => '书架',
                       2 => '本地',
-                      _ => '轻小说文库',
+                      _ => '轻之国度',
                     },
                     code: switch (_searchScope) {
                       1 => '02 / PERSONAL ARCHIVE',
                       2 => '03 / LOCAL ARCHIVE',
-                      _ => 'WENKU8 / READING ARCHIVE',
+                      _ => 'LIGHTNOVEL / READING ARCHIVE',
                     },
                     brand: _searchScope == 0,
                   ),
@@ -1018,8 +1024,8 @@ class DiscoverPage extends StatelessWidget {
     children: [
       Expanded(
         child: const ArchiveMasthead(
-          title: '轻小说文库',
-          code: 'WENKU8 / READING ARCHIVE',
+          title: '轻之国度',
+          code: 'LIGHTNOVEL / READING ARCHIVE',
           brand: true,
         ),
       ),
@@ -1084,10 +1090,6 @@ class DiscoverPage extends StatelessWidget {
               const SizedBox(height: 12),
               AppText(progress, style: const TextStyle(fontSize: 13)),
             ],
-            if (returnToLatest != null) ...[
-              const SizedBox(height: 8),
-              returnToLatest,
-            ],
           ],
         ),
       );
@@ -1116,12 +1118,12 @@ class DiscoverPage extends StatelessWidget {
                 children: [
                   ?returnToLatest,
                   if (feed?.publication != null &&
-                      WenkuFeaturesScope.maybeOf(context) != null)
+                      OnlineFeaturesScope.maybeOf(context) != null)
                     GlassTextButton(
                       onPressed: () => pushNovelPage<void>(
                         context,
-                        WenkuAccountPage(
-                          account: WenkuFeaturesScope.maybeOf(context)!.account,
+                        OnlineAccountPage(
+                          account: OnlineFeaturesScope.maybeOf(context)!.account,
                           state: state,
                           repository: repository,
                         ),
@@ -1212,7 +1214,11 @@ class DiscoverPage extends StatelessWidget {
                       ],
                       if (featuredCount > 0 && books.length > rowOffset) ...[
                         const SizedBox(height: 28),
-                        sectionHeader(context, '更多书籍', ''),
+                        sectionHeader(
+                          context,
+                          '全部书目',
+                          '$_lowerCategory · 第 ${rowOffset + 1}–${books.length} 本',
+                        ),
                         const SizedBox(height: 12),
                       ],
                       if (blockedAll)
@@ -1335,50 +1341,568 @@ class DiscoverPage extends StatelessWidget {
     );
   }
 
-  String get _lowerCategory =>
-      categoryTitle ??
-      feed?.publication?.name ??
-      (feed?.tags.isNotEmpty == true
-          ? feed!.tags.join(' · ')
-          : feed?.sort.label) ??
-      '最近更新';
+  static const _discoverSorts = <NovelSort>[
+    NovelSort.allVisit,
+    NovelSort.lastUpdate,
+    NovelSort.allVote,
+    NovelSort.postDate,
+    NovelSort.weekVisit,
+    NovelSort.dayVisit,
+    NovelSort.weekVote,
+    NovelSort.size,
+    NovelSort.fullFlag,
+  ];
 
-  Widget _categoryHeader(BuildContext context, {int? count}) =>
-      BookCollectionRegionToolbar(
+  static const _discoverSortLabels = <NovelSort, String>{
+    NovelSort.allVisit: '热度',
+    NovelSort.lastUpdate: '最近更新',
+    NovelSort.postDate: '新书',
+    NovelSort.allVote: '好书推荐',
+    NovelSort.weekVisit: '排行 · 综合热度',
+    NovelSort.dayVisit: '排行 · 今日热榜',
+    NovelSort.weekVote: '排行 · 轻小说榜',
+    NovelSort.goodNum: '排行 · 新书榜',
+    NovelSort.monthVisit: '排行 · 全站周榜',
+  };
+
+  String _sortDisplayLabel(NovelSort sort) =>
+      _discoverSortLabels[sort] ?? sort.label;
+
+  String get _lowerCategory {
+    if (categoryTitle case final title?) return title;
+    final currentFeed = feed;
+    if (currentFeed == null) return '最近更新';
+    if (currentFeed.tags.isNotEmpty) return currentFeed.tags.join(' · ');
+    final pub = currentFeed.publication;
+    final base = pub?.name ?? _sortDisplayLabel(currentFeed.sort);
+    if (pub == null &&
+        (currentFeed.sort == NovelSort.allVote ||
+            DiscoveryFilters.isRankSort(currentFeed.sort))) {
+      return base;
+    }
+    final defaultSortKey = pub != null || currentFeed.sort != NovelSort.allVisit
+        ? 'updated'
+        : 'hot';
+    final details = currentFeed.filter.summaryLabels(
+      defaultSortKey: defaultSortKey,
+    );
+    return details.isEmpty ? base : '$base · ${details.join(' · ')}';
+  }
+
+  int get _activeDiscoverFilterCount {
+    final currentFeed = feed;
+    if (currentFeed == null) return 0;
+    if (currentFeed.tags.isNotEmpty) return currentFeed.tags.length;
+    return currentFeed.filter.activeCount;
+  }
+
+  Widget _categoryHeader(BuildContext context, {int? count}) {
+    final currentFeed = feed;
+    final effectiveCount = count ?? (currentFeed?.items ?? books).length;
+    if (onChooseCategory != null || currentFeed == null) {
+      return BookCollectionRegionToolbar(
         title: '发现',
         category: _lowerCategory,
-        count: count ?? (feed?.items ?? books).length,
+        count: effectiveCount,
         categoryKey: const ValueKey('discover-category'),
         filterKey: const ValueKey('discover-filter'),
         viewKey: const ValueKey('discover-view'),
+        activeFilters: _activeDiscoverFilterCount,
         onCategory: onChooseCategory != null
             ? () => onChooseCategory!(context)
-            : feed == null
-            ? null
-            : () => _chooseSort(context),
+            : null,
         onFilter: onChooseCategory != null
             ? () => onChooseCategory!(context)
-            : feed == null
-            ? null
-            : () => _chooseSort(context),
+            : null,
         onView: () => _chooseView(context),
-        loading: feed?.loading == true && feed?.hasLoaded != true,
+        loading: currentFeed?.loading == true && currentFeed?.hasLoaded != true,
       );
+    }
+
+    final features = OnlineFeaturesScope.maybeOf(context);
+    final PublicationCatalog? pubCatalog =
+        features?.publications ??
+        (repository is PublicationCatalog
+            ? repository as PublicationCatalog
+            : null);
+    final SiteFeedFilterCatalog? filterCatalog = switch (features?.repository) {
+      final SiteFeedFilterCatalog catalog => catalog,
+      _ when repository is SiteFeedFilterCatalog =>
+        repository as SiteFeedFilterCatalog,
+      _ => null,
+    };
+    final activeFilters = _activeDiscoverFilterCount;
+    final loadingInitial =
+        currentFeed.loading && currentFeed.hasLoaded != true;
+    final colors = Theme.of(context).colorScheme;
+    final kind = DiscoveryFilters.sectionFor(
+      sort: currentFeed.sort,
+      publication: currentFeed.publication,
+    );
+    final fallbackSchema = _fallbackInlineSchema(currentFeed);
+    final cachedSchema = filterCatalog?.cachedFeedFilters(
+      sort: currentFeed.publication == null ? currentFeed.sort : null,
+      publication: currentFeed.publication,
+    );
+    final schema = cachedSchema == null
+        ? fallbackSchema
+        : fallbackSchema.mergeWith(cachedSchema);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        ArchiveSection(
+          title: '发现',
+          code: 'COLLECTION / REGION',
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              loadingInitial
+                  ? const InlineSkeleton(width: 38, height: 16)
+                  : AppText(
+                      '$effectiveCount 本',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                        color: colors.onSurfaceVariant,
+                      ),
+                    ),
+              const SizedBox(width: 8),
+              Semantics(
+                value: activeFilters == 0 ? '未筛选' : '$activeFilters 项筛选',
+                child: DiscoverHeaderIconAction(
+                  key: const ValueKey('discover-filter'),
+                  icon: CupertinoIcons.slider_horizontal_3,
+                  tooltip: '筛选',
+                  badgeCount: activeFilters,
+                  onTap: () => _chooseSort(context),
+                ),
+              ),
+              const SizedBox(width: 6),
+              DiscoverHeaderIconAction(
+                key: const ValueKey('discover-view'),
+                icon: CupertinoIcons.rectangle_grid_1x2,
+                tooltip: '视图',
+                onTap: () => _chooseView(context),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+        DiscoverChannelTabStrip(
+          key: const PageStorageKey('discover-top-tabs'),
+          padding: EdgeInsets.zero,
+          items: [
+            DiscoverChannelTabItem(
+              keyName: 'rank',
+              label: '排行',
+              tabKey: const ValueKey('discover-tab-rank'),
+              selected:
+                  currentFeed.tags.isEmpty && kind == WebsiteSectionKind.rank,
+              onTap: () => _switchWebsiteSort(
+                currentFeed,
+                DiscoveryFilters.isRankSort(currentFeed.sort)
+                    ? currentFeed.sort
+                    : NovelSort.weekVisit,
+              ),
+            ),
+            DiscoverChannelTabItem(
+              keyName: 'hot',
+              label: '热度',
+              tabKey: const ValueKey('discover-tab-hot'),
+              selected:
+                  currentFeed.tags.isEmpty && kind == WebsiteSectionKind.hot,
+              onTap: () => _switchWebsiteSort(
+                currentFeed,
+                DiscoveryFilters.isHotTabSort(currentFeed.sort)
+                    ? currentFeed.sort
+                    : NovelSort.allVisit,
+              ),
+            ),
+            DiscoverChannelTabItem(
+              keyName: 'new',
+              label: '新书',
+              tabKey: const ValueKey('discover-tab-new'),
+              selected:
+                  currentFeed.tags.isEmpty &&
+                  kind == WebsiteSectionKind.newBooks,
+              onTap: () => _switchWebsiteSort(currentFeed, NovelSort.postDate),
+            ),
+            for (final channel in DiscoveryFilters.defaultChannels)
+              DiscoverChannelTabItem(
+                keyName: 'pub-${channel.id}',
+                label: channel.name,
+                tabKey: ValueKey('discover-tab-pub-${channel.id}'),
+                selected:
+                    currentFeed.tags.isEmpty &&
+                    currentFeed.publication?.id == channel.id,
+                onTap: () {
+                  if (pubCatalog == null) return;
+                  _switchWebsitePublication(
+                    context,
+                    currentFeed,
+                    channel,
+                    pubCatalog,
+                    features,
+                  );
+                },
+              ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        if (currentFeed.tags.isNotEmpty)
+          DiscoverInlineFilterCard(
+            padding: const EdgeInsets.fromLTRB(12, 8, 10, 8),
+            child: Row(
+              children: [
+                Expanded(
+                  child: AppText(
+                    '标签：${currentFeed.tags.join(' · ')}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      color: colors.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                DiscoverFilterChip(
+                  dense: true,
+                  label: '清除',
+                  selected: false,
+                  onTap: () => currentFeed.selectSort(currentFeed.sort),
+                ),
+              ],
+            ),
+          )
+        else if (kind == WebsiteSectionKind.rank)
+          SingleChildScrollView(
+            key: const PageStorageKey('discover-sub-rank'),
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                for (final (i, entry) in DiscoveryFilters.rankScenes.indexed) ...[
+                  if (i > 0) const SizedBox(width: 6),
+                  DiscoverFilterChip(
+                    key: ValueKey('discover-subrank-${entry.$1.name}'),
+                    dense: true,
+                    label: entry.$2,
+                    selected: currentFeed.sort == entry.$1,
+                    onTap: () => currentFeed.selectSort(entry.$1),
+                  ),
+                ],
+              ],
+            ),
+          )
+        else if (kind == WebsiteSectionKind.hot)
+          SingleChildScrollView(
+            key: const PageStorageKey('discover-sub-hot'),
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                for (final (i, entry) in DiscoveryFilters.hotScenes.indexed) ...[
+                  if (i > 0) const SizedBox(width: 6),
+                  DiscoverFilterChip(
+                    key: ValueKey('discover-subhot-${entry.$1.name}'),
+                    dense: true,
+                    label: entry.$2,
+                    selected: currentFeed.sort == entry.$1,
+                    onTap: () => currentFeed.selectSort(entry.$1),
+                  ),
+                ],
+              ],
+            ),
+          )
+        else
+          _buildInlineChannelFilterRows(
+            context,
+            currentFeed: currentFeed,
+            schema: schema,
+            pubCatalog: pubCatalog,
+            features: features,
+            labelColor: colors.onSurfaceVariant,
+          ),
+      ],
+    );
+  }
+
+  FeedFilterSchema _fallbackInlineSchema(NovelFeedController currentFeed) {
+    return FeedFilterSchema.defaultFor(
+      supportsCombinedFilters: true,
+      defaultSortKey:
+          currentFeed.publication == null &&
+              currentFeed.sort == NovelSort.allVisit
+          ? 'hot'
+          : 'updated',
+      includeEpubStatus: currentFeed.publication?.id == 4,
+    );
+  }
+
+  Widget _buildInlineChannelFilterRows(
+    BuildContext context, {
+    required NovelFeedController currentFeed,
+    required FeedFilterSchema schema,
+    required PublicationCatalog? pubCatalog,
+    required OnlineFeatures? features,
+    required Color labelColor,
+  }) {
+    final activeSortKey = currentFeed.filter.normalizedSortKey.isNotEmpty
+        ? currentFeed.filter.normalizedSortKey
+        : schema.defaultSortKey;
+    final readOptions = schema.readOptions.isEmpty
+        ? FeedFilterSchema.canonicalReadOptions
+        : schema.readOptions;
+
+    Widget labeledRow({
+      required String label,
+      required Key storageKey,
+      required List<Widget> chips,
+    }) => Row(
+      children: [
+        SizedBox(
+          width: 34,
+          child: AppText(
+            label,
+            style: TextStyle(
+              fontSize: 12.5,
+              fontWeight: FontWeight.w600,
+              color: labelColor,
+            ),
+          ),
+        ),
+        const SizedBox(width: 6),
+        Expanded(
+          child: SingleChildScrollView(
+            key: storageKey,
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                for (final (i, chip) in chips.indexed) ...[
+                  if (i > 0) const SizedBox(width: 7),
+                  chip,
+                ],
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+
+    return DiscoverInlineFilterCard(
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (readOptions.length > 1) ...[
+            labeledRow(
+              label: '阅读',
+              storageKey: const PageStorageKey('discover-inline-read-row'),
+              chips: [
+                for (final option in readOptions)
+                  DiscoverFilterChip(
+                    key: ValueKey('discover-inline-read-${option.key}'),
+                    dense: true,
+                    label: option.title,
+                    selected: currentFeed.filter.readFilter == option.key,
+                    onTap: () => _applyInlineFilter(
+                      context,
+                      currentFeed: currentFeed,
+                      nextFilter: currentFeed.filter.copyWith(
+                        readFilter: option.key,
+                        readTitle: option.key == 'all' ? null : option.title,
+                        clearReadTitle: option.key == 'all',
+                      ),
+                      schema: schema,
+                      pubCatalog: pubCatalog,
+                      features: features,
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 8),
+          ],
+          if (schema.statusOptions.length > 1) ...[
+            labeledRow(
+              label: '状态',
+              storageKey: const PageStorageKey('discover-inline-status-row'),
+              chips: [
+                for (final option in schema.statusOptions)
+                  DiscoverFilterChip(
+                    key: ValueKey('discover-inline-status-${option.key}'),
+                    dense: true,
+                    label: option.title,
+                    selected: currentFeed.filter.statusFilter == option.key,
+                    onTap: () => _applyInlineFilter(
+                      context,
+                      currentFeed: currentFeed,
+                      nextFilter: currentFeed.filter.copyWith(
+                        statusFilter: option.key,
+                        statusTitle: option.key == 'all' ? null : option.title,
+                        clearStatusTitle: option.key == 'all',
+                      ),
+                      schema: schema,
+                      pubCatalog: pubCatalog,
+                      features: features,
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 8),
+          ],
+          if (schema.categoryOptions.length > 1) ...[
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: SizedBox(
+                    width: 34,
+                    child: AppText(
+                      '分类',
+                      style: TextStyle(
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w600,
+                        color: labelColor,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: DiscoverCollapsibleCategoryChips(
+                    key: ValueKey(
+                      'discover-inline-cat-wrap-${currentFeed.publication?.id ?? currentFeed.sort.name}',
+                    ),
+                    options: schema.categoryOptions,
+                    selectedKey: currentFeed.filter.categoryFilter,
+                    chipKeyBuilder: (key) =>
+                        ValueKey('discover-inline-category-$key'),
+                    onSelected: (option) => _applyInlineFilter(
+                      context,
+                      currentFeed: currentFeed,
+                      nextFilter: currentFeed.filter.copyWith(
+                        categoryFilter: option.key,
+                        categoryTitle:
+                            option.key == 'all' ? null : option.title,
+                        clearCategoryTitle: option.key == 'all',
+                      ),
+                      schema: schema,
+                      pubCatalog: pubCatalog,
+                      features: features,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+          ],
+          if (schema.supportsSort)
+            labeledRow(
+              label: '排序',
+              storageKey: const PageStorageKey('discover-inline-sort-row'),
+              chips: [
+                for (final option in schema.sortOptions)
+                  DiscoverFilterChip(
+                    key: ValueKey('discover-inline-sort-${option.key}'),
+                    dense: true,
+                    label: option.title,
+                    selected: activeSortKey == option.key,
+                    onTap: () => _applyInlineFilter(
+                      context,
+                      currentFeed: currentFeed,
+                      nextFilter: currentFeed.filter.copyWith(sortKey: option.key),
+                      schema: schema,
+                      pubCatalog: pubCatalog,
+                      features: features,
+                    ),
+                  ),
+              ],
+            ),
+        ],
+      ),
+    );
+  }
+
+  void _switchWebsiteSort(NovelFeedController currentFeed, NovelSort sort) {
+    unawaited(currentFeed.selectSort(sort));
+  }
+
+  Future<void> _switchWebsitePublication(
+    BuildContext context,
+    NovelFeedController currentFeed,
+    PublicationLibrary channel,
+    PublicationCatalog catalog,
+    OnlineFeatures? features,
+  ) async {
+    await features?.account.initialize();
+    if (!context.mounted) return;
+    await currentFeed.selectPublication(channel, catalog: catalog);
+  }
+
+  Future<void> _applyInlineFilter(
+    BuildContext context, {
+    required NovelFeedController currentFeed,
+    required FeedFilter nextFilter,
+    required FeedFilterSchema schema,
+    required PublicationCatalog? pubCatalog,
+    required OnlineFeatures? features,
+  }) async {
+    final normalized = nextFilter.normalizedFor(
+      defaultSortKey: schema.defaultSortKey,
+    );
+    if (currentFeed.publication case final pub?) {
+      if (pubCatalog == null) return;
+      await features?.account.initialize();
+      if (!context.mounted) return;
+      await currentFeed.selectPublication(
+        pub,
+        catalog: pubCatalog,
+        filter: normalized,
+      );
+    } else {
+      await currentFeed.selectSort(currentFeed.sort, filter: normalized);
+    }
+  }
 
   Future<void> _chooseSort(BuildContext context) async {
-    final features = WenkuFeaturesScope.maybeOf(context);
+    final features = OnlineFeaturesScope.maybeOf(context);
+    final siteTags =
+        features?.repository.discoveryCategoryTags(
+          sort: feed!.sort,
+          publication: feed!.publication,
+        ) ??
+        (feed!.tagSuggestions.isNotEmpty
+            ? feed!.tagSuggestions
+            : LightNovelRepository.defaultHomeTags);
+    final PublicationCatalog? pubCatalog =
+        features?.publications ??
+        (repository is PublicationCatalog
+            ? repository as PublicationCatalog
+            : null);
+    final SiteFeedFilterCatalog? siteFilterCatalog = switch (features?.repository) {
+      final SiteFeedFilterCatalog catalog => catalog,
+      _ when repository is SiteFeedFilterCatalog =>
+        repository as SiteFeedFilterCatalog,
+      _ => null,
+    };
     final selected = await showJellySheet<DiscoverySelection>(
       context: context,
       reduceMotion: state.reduceMotion,
-      heightFactor: .75,
+      maxHeight: MediaQuery.sizeOf(context).height * .82,
       builder: (_) => DiscoveryFilters(
         sort: feed!.sort,
         books: feed!.allItems,
+        filter: feed!.filter,
         selectedTags: feed!.tags.toSet(),
-        availableTags: feed!.tagSuggestions,
-        publicationCatalog: features?.publications,
+        availableTags: siteTags,
+        restrictToAvailableTags: true,
+        availableSorts: _discoverSorts,
+        sortLabels: _discoverSortLabels,
+        publicationCatalog: pubCatalog,
         selectedPublication: feed!.publication,
         preparePublications: features?.account.initialize,
+        siteFilterCatalog: siteFilterCatalog,
         blockedTags: state.blockedTags,
         onBlockedTagsChanged: (tags) async {
           await state.setBlockedTags(tags);
@@ -1388,16 +1912,19 @@ class DiscoverPage extends StatelessWidget {
     );
     if (!context.mounted || selected == null) return;
     if (selected.publication case final publication?) {
-      if (features == null) return;
-      await features.account.initialize();
+      if (pubCatalog == null) return;
+      await features?.account.initialize();
       if (!context.mounted) return;
       await feed!.selectPublication(
         publication,
-        catalog: features.publications,
+        catalog: pubCatalog,
+        filter: selected.filter,
       );
+    } else if (selected.tags case final tags?) {
+      await feed!.selectTags(tags);
+    } else if (selected.sort case final sort?) {
+      await feed!.selectSort(sort, filter: selected.filter);
     }
-    if (selected.sort case final sort?) await feed!.selectSort(sort);
-    if (selected.tags case final tags?) await feed!.selectTags(tags);
   }
 
   Future<void> _chooseView(BuildContext context) => showJellySheet<void>(
@@ -3593,21 +4120,10 @@ class SettingsPage extends StatelessWidget {
         ],
       ),
     ),
-    if (LocalPlatform.android) ...[
+    if (LocalPlatform.fileActions) ...[
       const SizedBox(height: 14),
       FeatureEntry(
-        key: const ValueKey('settings-legacy-import'),
-        title: '导入旧版文库记录',
-        icon: CupertinoIcons.folder_badge_plus,
-        subtitle: '预览后合并，保留较新的阅读进度',
-        onTap: () => pushNovelPage<void>(
-          context,
-          LegacyImportPage(state: state),
-          reduceMotion: state.reduceMotion,
-        ),
-      ),
-      const SizedBox(height: 14),
-      FeatureEntry(
+        key: const ValueKey('settings-clear-illustration-cache'),
         title: '清理插图缓存',
         icon: CupertinoIcons.photo,
         subtitle: '不影响书架、正文缓存和阅读记录',
@@ -3622,8 +4138,8 @@ class SettingsPage extends StatelessWidget {
             return;
           }
           try {
-            await LegacyTransport.clearIllustrations();
-            ReaderIllustrationCache.shared.clearMemory();
+            await ReaderIllustrationCache.shared.clearAll();
+            await LegacyCover.clearCache();
             if (context.mounted) showNovelFeedback(context, '插图缓存已清理');
           } catch (_) {
             if (context.mounted) showNovelFeedback(context, '缓存清理失败，请重试');
@@ -4255,17 +4771,56 @@ class DetailLoaderPage extends StatefulWidget {
 }
 
 class _DetailLoaderPageState extends State<DetailLoaderPage> {
-  late Future<Novel> _loaded = _load();
+  Novel? _detail;
+  List<NovelChapter>? _chapters;
   Novel? _cached;
+  Object? _error;
+  bool _loading = true;
+  int _generation = 0;
 
   @override
   void initState() {
     super.initState();
-    if (widget.repository case final OfflineNovelRepository offline) {
-      final saved = offline.cache.book(widget.novel.id)?.novel;
-      if (saved != null && saved.chapters.isNotEmpty) _cached = saved;
-    }
+    _primeFromCache();
     unawaited(_seedFromCache());
+    unawaited(_load());
+  }
+
+  @override
+  void didUpdateWidget(DetailLoaderPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.novel.id != widget.novel.id ||
+        oldWidget.repository != widget.repository) {
+      _detail = null;
+      _chapters = null;
+      _cached = null;
+      _error = null;
+      _loading = true;
+      _primeFromCache();
+      unawaited(_seedFromCache());
+      unawaited(_load());
+    }
+  }
+
+  void _primeFromCache() {
+    final id = widget.novel.id;
+    if (widget.repository case final OfflineNovelRepository offline) {
+      final saved = offline.peekCachedDetail(id);
+      if (saved != null) _detail = saved;
+      final savedChapters = offline.peekCachedChapters(id);
+      if (savedChapters != null && savedChapters.isNotEmpty) {
+        _chapters = savedChapters;
+        if (saved != null && saved.chapters.isNotEmpty) {
+          _cached = saved;
+        }
+      }
+    } else if (widget.repository case final CachedBookPeekCatalog peek) {
+      _detail = peek.cachedDetail(id);
+      final cachedChapters = peek.cachedChapters(id);
+      if (cachedChapters != null && cachedChapters.isNotEmpty) {
+        _chapters = cachedChapters;
+      }
+    }
   }
 
   Future<void> _seedFromCache() async {
@@ -4273,7 +4828,11 @@ class _DetailLoaderPageState extends State<DetailLoaderPage> {
       try {
         final cached = await offline.cachedBook(widget.novel.id);
         if (mounted && cached != null && cached.chapters.isNotEmpty) {
-          setState(() => _cached = cached);
+          setState(() {
+            _cached = cached;
+            _detail ??= cached;
+            _chapters ??= cached.chapters;
+          });
         }
       } catch (_) {
         // Online loading remains available when a local snapshot is damaged.
@@ -4281,41 +4840,69 @@ class _DetailLoaderPageState extends State<DetailLoaderPage> {
     }
   }
 
-  Future<Novel> _load() async {
-    final detail = await widget.repository.detail(widget.novel);
-    final chapters = await widget.repository.chapters(widget.novel.id);
-    final loaded = detail.withChapters(chapters);
-    await widget.state.rememberNovel(loaded);
-    return loaded;
+  Future<void> _load() async {
+    final generation = ++_generation;
+    if (mounted) {
+      setState(() {
+        _loading = true;
+        _error = null;
+      });
+    }
+    try {
+      final detail = await widget.repository.detail(widget.novel);
+      if (!mounted || generation != _generation) return;
+      setState(() {
+        _detail = detail;
+      });
+      final chapters = await widget.repository.chapters(widget.novel.id);
+      if (!mounted || generation != _generation) return;
+      final loaded = detail.withChapters(chapters);
+      setState(() {
+        _detail = loaded;
+        _chapters = chapters;
+        _loading = false;
+        _error = null;
+      });
+      unawaited(widget.state.rememberNovel(loaded));
+    } catch (error) {
+      if (!mounted || generation != _generation) return;
+      setState(() {
+        _loading = false;
+        _error = error;
+      });
+    }
   }
 
   @override
-  Widget build(BuildContext context) => FutureBuilder<Novel>(
-    future: _loaded,
-    // Keep the destination cover's element and layout alive from the first
-    // route frame through loading, errors and completion of its Hero flight.
-    builder: (context, snapshot) => DetailPage(
-      novel: snapshot.data ?? _cached ?? widget.novel,
+  Widget build(BuildContext context) {
+    final effectiveDetail = _detail ?? _cached ?? widget.novel;
+    final effectiveChapters = _chapters ?? _cached?.chapters;
+    final effectiveNovel = effectiveChapters == null
+        ? effectiveDetail
+        : effectiveDetail.withChapters(effectiveChapters);
+    final hasInitialMetadata =
+        effectiveNovel.title.trim().isNotEmpty &&
+        effectiveNovel.author.trim().isNotEmpty;
+    final directoryMissing = effectiveChapters == null;
+
+    return DetailPage(
+      novel: effectiveNovel,
       transitionNovel: widget.novel,
       coverHeroTag: widget.coverHeroTag,
       state: widget.state,
       repository: widget.repository,
-      isLoading:
-          !snapshot.hasData &&
-          _cached == null &&
-          snapshot.connectionState != ConnectionState.done,
-      loadError: _cached == null ? snapshot.error : null,
+      isLoading: _loading && directoryMissing && !hasInitialMetadata,
+      isDirectoryLoading: _loading && directoryMissing && hasInitialMetadata,
+      loadError: directoryMissing ? _error : null,
       fromCache:
-          (_cached != null && !snapshot.hasData) ||
+          (_cached != null && _chapters == null) ||
           (widget.repository is OfflineNovelRepository &&
               (widget.repository as OfflineNovelRepository).isDirectoryOffline(
                 widget.novel.id,
               )),
-      onRetry: () => setState(() {
-        _loaded = _load();
-      }),
-    ),
-  );
+      onRetry: _load,
+    );
+  }
 }
 
 class DetailPage extends StatefulWidget {
@@ -4327,6 +4914,7 @@ class DetailPage extends StatefulWidget {
     this.coverHeroTag,
     this.transitionNovel,
     this.isLoading = false,
+    this.isDirectoryLoading = false,
     this.loadError,
     this.onRetry,
     this.fromCache = false,
@@ -4339,6 +4927,7 @@ class DetailPage extends StatefulWidget {
   final Object? coverHeroTag;
   final Novel? transitionNovel;
   final bool isLoading;
+  final bool isDirectoryLoading;
   final Object? loadError;
   final VoidCallback? onRetry;
   final bool fromCache;
@@ -4385,7 +4974,7 @@ class _DetailPageState extends State<DetailPage> with TickerProviderStateMixin {
   List<({NovelVolume? volume, int? chapter})> _directory() {
     // Provisional cached chapters can predate volume metadata. Wait for the
     // displayed directory before choosing its initially expanded volume.
-    if (isLoading || loadError != null) return const [];
+    if (_directoryBusy || loadError != null) return const [];
     final volumes = NovelVolume.of(novel.directoryChapters);
     if (_directoryBook != novel.id) {
       _expandedVolumes.clear();
@@ -4435,6 +5024,8 @@ class _DetailPageState extends State<DetailPage> with TickerProviderStateMixin {
   bool get _authorUpdated =>
       transitionNovel != null && transitionNovel!.author != novel.author;
   bool get isLoading => widget.isLoading;
+  bool get isDirectoryLoading => widget.isDirectoryLoading;
+  bool get _directoryBusy => isLoading || isDirectoryLoading;
   Object? get loadError => widget.loadError;
   VoidCallback? get onRetry => widget.onRetry;
   bool get _reduceMotion =>
@@ -4505,7 +5096,7 @@ class _DetailPageState extends State<DetailPage> with TickerProviderStateMixin {
         compact: true,
         selected: _catalogueReversed,
         onPressed:
-            isLoading ||
+            _directoryBusy ||
                 loadError != null ||
                 novel.directory.length < 2 ||
                 _catalogueOrderSaving
@@ -4669,7 +5260,9 @@ class _DetailPageState extends State<DetailPage> with TickerProviderStateMixin {
                                     ),
                                     child:
                                         !isLocalBook(novel.id) &&
-                                            novel.summary.trim().isNotEmpty
+                                            cleanNovelSummary(
+                                              novel.summary,
+                                            ).isNotEmpty
                                         ? Padding(
                                             padding: const EdgeInsets.only(
                                               top: 28,
@@ -4679,7 +5272,7 @@ class _DetailPageState extends State<DetailPage> with TickerProviderStateMixin {
                                         : const SizedBox.shrink(),
                                   ),
                                   if (!isLocalBook(novel.id) &&
-                                      WenkuFeaturesScope.maybeOf(context) !=
+                                      OnlineFeaturesScope.maybeOf(context) !=
                                           null)
                                     Padding(
                                       padding: const EdgeInsets.only(top: 24),
@@ -4712,7 +5305,13 @@ class _DetailPageState extends State<DetailPage> with TickerProviderStateMixin {
                                             CrossAxisAlignment.start,
                                         children: [
                                           _directoryHeading(context),
-                                          if (novel.chapters.isEmpty) ...[
+                                          if (isDirectoryLoading) ...[
+                                            const SizedBox(height: 14),
+                                            const BookCollectionSkeleton(
+                                              rows: 4,
+                                              label: '正在加载目录',
+                                            ),
+                                          ] else if (novel.chapters.isEmpty) ...[
                                             const SizedBox(height: 14),
                                             const AppText('暂无章节'),
                                           ],
@@ -4937,6 +5536,19 @@ class _DetailPageState extends State<DetailPage> with TickerProviderStateMixin {
                 ),
               ),
       ),
+      if (novel.illustrator?.trim() case final illustrator?
+          when illustrator.isNotEmpty) ...[
+        const SizedBox(height: 4),
+        AppText(
+          '插画：$illustrator',
+          key: const ValueKey('detail-illustrator'),
+          style: TextStyle(
+            fontSize: 13,
+            height: 1.45,
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
+        ),
+      ],
       // Metadata is a separate information block in the reference layout.
       const SizedBox(height: 18),
       RevealFromTop(
@@ -4969,6 +5581,18 @@ class _DetailPageState extends State<DetailPage> with TickerProviderStateMixin {
                   ),
                 ),
               ),
+            if (!isLoading && loadError == null && _statsLabel != null) ...[
+              const SizedBox(height: 4),
+              AppText(
+                _statsLabel!,
+                key: const ValueKey('detail-stats'),
+                style: TextStyle(
+                  fontSize: 13,
+                  height: 1.5,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
             if (!isLoading && loadError == null && _updateLabel != null) ...[
               const SizedBox(height: 4),
               AppText(
@@ -4981,7 +5605,43 @@ class _DetailPageState extends State<DetailPage> with TickerProviderStateMixin {
               ),
             ],
             const SizedBox(height: 12),
-            ArchiveCode(ArchiveDesign.fileCode(novel.id), inverse: true),
+            Wrap(
+              spacing: 8,
+              runSpacing: 6,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                ArchiveCode(ArchiveDesign.fileCode(novel.id), inverse: true),
+                if (novel.badge?.trim() case final badge?
+                    when badge.isNotEmpty)
+                  DecoratedBox(
+                    key: const ValueKey('detail-badge'),
+                    decoration: BoxDecoration(
+                      border: Border.all(
+                        color: Theme.of(
+                          context,
+                        ).colorScheme.outlineVariant.withValues(alpha: .7),
+                        width: .7,
+                      ),
+                      borderRadius: BorderRadius.circular(3),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 6,
+                        vertical: 2,
+                      ),
+                      child: AppText(
+                        badge,
+                        style: TextStyle(
+                          fontSize: 11,
+                          height: 1.25,
+                          fontWeight: FontWeight.w600,
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
           ],
         ),
       ),
@@ -5014,6 +5674,27 @@ class _DetailPageState extends State<DetailPage> with TickerProviderStateMixin {
       ],
     ],
   );
+
+  String? get _statsLabel {
+    final parts = <String>[
+      if (novel.rating != null && novel.rating!.isFinite && novel.rating! > 0)
+        '评分 ${novel.rating!.toStringAsFixed(1)}',
+      if (novel.wordCount != null && novel.wordCount! > 0)
+        _formatWordCount(novel.wordCount!),
+    ];
+    return parts.isEmpty ? null : parts.join(' · ');
+  }
+
+  static String _formatWordCount(int wordCount) {
+    if (wordCount >= 10000) {
+      final wan = wordCount / 10000;
+      final formatted = wan >= 100 || (wan - wan.roundToDouble()).abs() < 0.05
+          ? wan.toStringAsFixed(0)
+          : wan.toStringAsFixed(1);
+      return '$formatted 万字';
+    }
+    return '$wordCount 字';
+  }
 
   String? get _updateLabel {
     final updated = novel.lastUpdate?.trim();
@@ -5141,7 +5822,8 @@ class _DetailPageState extends State<DetailPage> with TickerProviderStateMixin {
   Widget _synopsis(BuildContext context) => LayoutBuilder(
     builder: (context, constraints) {
       const style = TextStyle(fontSize: 15, height: 1.8);
-      final text = appText(context, novel.summary);
+      final summary = cleanNovelSummary(novel.summary);
+      final text = appText(context, summary);
       final painter = TextPainter(
         text: TextSpan(
           text: text,
@@ -5166,7 +5848,7 @@ class _DetailPageState extends State<DetailPage> with TickerProviderStateMixin {
             alignment: Alignment.topLeft,
             curve: NovelMotion.ease,
             child: AppText(
-              novel.summary,
+              summary,
               key: const ValueKey('detail-synopsis-text'),
               maxLines: _summaryExpanded ? null : 3,
               overflow: _summaryExpanded
@@ -5238,7 +5920,7 @@ class _DetailPageState extends State<DetailPage> with TickerProviderStateMixin {
     return chapter >= 0 && chapter < novel.chapters.length ? chapter : null;
   }
 
-  String get _primaryLabel => isLoading
+  String get _primaryLabel => _directoryBusy
       ? '正在加载目录'
       : loadError != null
       ? '重试加载目录'
@@ -5263,7 +5945,7 @@ class _DetailPageState extends State<DetailPage> with TickerProviderStateMixin {
   );
 
   Widget _footerActions(BuildContext context) {
-    final action = isLoading
+    final action = _directoryBusy
         ? null
         : loadError != null
         ? onRetry
@@ -5277,7 +5959,7 @@ class _DetailPageState extends State<DetailPage> with TickerProviderStateMixin {
       icon: CupertinoIcons.play_fill,
       label: _primaryLabel,
       semanticLabel: _readLabel,
-      loading: isLoading,
+      loading: _directoryBusy,
       onTap: action,
     );
     final secondary = _footerAction(
@@ -5389,7 +6071,7 @@ class _DetailPageState extends State<DetailPage> with TickerProviderStateMixin {
   }
 
   String get _readLabel {
-    if (isLoading) return '正在加载目录';
+    if (_directoryBusy) return '正在加载目录';
     if (loadError != null) return '重试加载目录';
     if (novel.chapters.isEmpty) return '暂无可读章节';
     final action = _resumeChapter != null ? '继续阅读' : '开始阅读';
@@ -5405,6 +6087,7 @@ class _DetailPageState extends State<DetailPage> with TickerProviderStateMixin {
   }
 
   String get _directoryCountLabel {
+    if (_directoryBusy) return '正在加载目录…';
     final count = novel.directory.length;
     final volumes = NovelVolume.of(
       novel.directoryChapters,
@@ -5533,8 +6216,30 @@ class _DetailPageState extends State<DetailPage> with TickerProviderStateMixin {
   Widget _chapterRow(BuildContext context, int index) {
     final entry = novel.directory[index];
     final current = _resumeDirectory == index;
-    return _cacheReactive(
-      () => JellyTapSurface(
+    final features = OnlineFeaturesScope.maybeOf(context);
+    final LightNovelRepository? lnRepo =
+        features?.repository ??
+        (repository is LightNovelRepository
+            ? repository as LightNovelRepository
+            : (repository is OfflineNovelRepository &&
+                      (repository as OfflineNovelRepository).remote
+                          is LightNovelRepository
+                  ? (repository as OfflineNovelRepository).remote
+                        as LightNovelRepository
+                  : null));
+    final chapter =
+        entry.chapter >= 0 && entry.chapter < novel.chapters.length
+        ? novel.chapters[entry.chapter]
+        : null;
+    final liveMeta = chapter != null && chapter.id > 0
+        ? lnRepo?.chapterMeta(chapter.id)
+        : null;
+    return _cacheReactive(() {
+      final cached = _isCached(entry.target.chapterId);
+      final isLocked = liveMeta?.isLocked ?? chapter?.isLocked ?? false;
+      final coinPrice = liveMeta?.coinPrice ?? chapter?.coinPrice ?? 0;
+      final locked = chapter != null && isLocked && !cached;
+      return JellyTapSurface(
         key: ValueKey('detail-directory-entry-$index'),
         onTap: () => _openReader(
           context,
@@ -5591,7 +6296,44 @@ class _DetailPageState extends State<DetailPage> with TickerProviderStateMixin {
                   ],
                 ),
               ),
-              if (_isCached(entry.target.chapterId)) ...[
+              if (locked) ...[
+                const SizedBox(width: 10),
+                Container(
+                  key: ValueKey('detail-chapter-locked-$index'),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 7,
+                    vertical: 3,
+                  ),
+                  decoration: BoxDecoration(
+                    border: Border.all(
+                      color: Theme.of(
+                        context,
+                      ).colorScheme.outlineVariant.withValues(alpha: .7),
+                      width: .7,
+                    ),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      ArchiveIcon(
+                        CupertinoIcons.lock_fill,
+                        size: 11,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
+                      const SizedBox(width: 4),
+                      AppText(
+                        coinPrice > 0 ? '$coinPrice 轻币' : '需解锁',
+                        style: TextStyle(
+                          fontSize: 11,
+                          height: 1.2,
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ] else if (cached) ...[
                 const SizedBox(width: 10),
                 ArchiveIcon(
                   CupertinoIcons.check_mark,
@@ -5605,8 +6347,8 @@ class _DetailPageState extends State<DetailPage> with TickerProviderStateMixin {
             ],
           ),
         ),
-      ),
-    );
+      );
+    });
   }
 
   Widget _header(BuildContext context) => ArchiveHeaderBar(
@@ -5828,6 +6570,9 @@ class _ReaderPageState extends State<ReaderPage>
   int _paragraphCount = 0;
   bool _saveQueued = false;
   Timer? _idleSave;
+  OnlineFeatures? _onlineFeatures;
+  final Set<int> _unlockingChapterIds = {};
+  (int, int, int)? _lastSyncedRemoteHistory;
   final _activityOverlays = <String>{};
   bool get _catalogueOpen => _activityOverlays.contains('catalogue');
   set _catalogueOpen(bool value) => _activityOverlay('catalogue', value);
@@ -5905,11 +6650,23 @@ class _ReaderPageState extends State<ReaderPage>
 
   void _pagedReadingChanged() {
     final origin = _pageAdvanceOrigin;
-    if (origin != null &&
-        _verifiedEligible &&
-        (_chapter != origin.$1 || _paged.page != origin.$2)) {
+    final pageTurned =
+        origin != null &&
+        (_chapter != origin.$1 || _paged.page != origin.$2);
+    if (pageTurned && _verifiedEligible) {
       _pageAdvanceOrigin = null;
       _verifiedReading.advance();
+    }
+    if (pageTurned) {
+      final content = _currentContent;
+      if (content != null && content.illustrations.isNotEmpty) {
+        _prewarmOnlineIllustrations(
+          content,
+          generation: _contentGeneration,
+          fromParagraph: _paged.anchor?.paragraph ?? 0,
+          precacheCount: 2,
+        );
+      }
     }
     _saveWhenIdle();
   }
@@ -6628,6 +7385,7 @@ class _ReaderPageState extends State<ReaderPage>
   void didChangeDependencies() {
     super.didChangeDependencies();
     _activityRouteCurrent = ModalRoute.isCurrentOf(context) != false;
+    _onlineFeatures = OnlineFeaturesScope.maybeOf(context);
     _syncReadingActivity();
     _releaseFeedbackHeader ??= bindNovelFeedbackHeader(context, _chrome);
     final handoff = ReaderHandoffScope.maybeOf(context);
@@ -6997,6 +7755,7 @@ class _ReaderPageState extends State<ReaderPage>
     ReaderMatch? findMatch,
     bool listeningFollow = false,
     _PreparedReaderChapter? prepared,
+    Object? error,
     int turnDirection = 0,
   }) {
     if (index < 0 || index >= _sourceBook.chapters.length) {
@@ -7004,6 +7763,7 @@ class _ReaderPageState extends State<ReaderPage>
     }
     if (index != _chapter &&
         prepared == null &&
+        error == null &&
         (!_readerPreferences.chapterEntrance || turnDirection != 0) &&
         _currentContent != null) {
       if (_pendingChapter == index) return;
@@ -7062,8 +7822,11 @@ class _ReaderPageState extends State<ReaderPage>
     setState(() {
       _chapterTurnDirection = turnDirection;
       _chapter = index;
-      _content = _loadContent(prepared: prepared, findMatch: findMatch);
+      _content = error != null
+          ? Future.value((content: null, error: error))
+          : _loadContent(prepared: prepared, findMatch: findMatch);
     });
+    if (error != null) _showChrome(true);
     if (_scroll.hasClients) _scroll.jumpTo(0);
   }
 
@@ -7100,6 +7863,19 @@ class _ReaderPageState extends State<ReaderPage>
       );
     } catch (error) {
       if (!mounted || ticket != _chapterSwitchTicket) return;
+      if (error is LockedChapterException ||
+          error is OnlineAuthenticationRequired) {
+        _go(
+          index,
+          error: error,
+          position: position,
+          highlightBookmark: highlightBookmark,
+          findMatch: findMatch,
+          listeningFollow: listeningFollow,
+          turnDirection: turnDirection,
+        );
+        return;
+      }
       _showChrome(true);
       showNovelFeedback(context, '章节未能载入，当前正文已保留，请重试');
     } finally {
@@ -7137,7 +7913,32 @@ class _ReaderPageState extends State<ReaderPage>
             chapterId: _sourceBook.chapters[index].id,
           ),
         );
-        final localized = await placed.localizedAsync(Locale('zh', region));
+        var staged = placed;
+        final headingTitle = _sourceBook.readingTitleFor(index).trim();
+        if (!isLocalBook(widget.novel.id) &&
+            staged.epubLayout?.hasRichHeading != true &&
+            headingTitle.isNotEmpty &&
+            !readerHasLeadingChapterTitle(staged, headingTitle)) {
+          staged = staged.withLeadingHeading(
+            EpubHeadingBlock(
+              text: headingTitle,
+              style: const EpubBlockStyle(
+                kind: EpubBlockKind.heading1,
+                fontScale: 1.38,
+                fontWeight: 700,
+                lineHeight: 1.35,
+                textAlign: TextAlign.start,
+                textIndentEm: 0,
+                paddingTopEm: 0.35,
+                paddingBottomEm: 0.7,
+                marginBottomEm: 0.9,
+                borderBottomWidth: 1.2,
+                separateVerticalPadding: true,
+              ),
+            ),
+          );
+        }
+        final localized = await staged.localizedAsync(Locale('zh', region));
         if (localized.epubLayout case final epubLayout?
             when epubLayout.embeddedFonts.isNotEmpty) {
           await EpubFontManager.ensureLoaded(
@@ -7267,6 +8068,7 @@ class _ReaderPageState extends State<ReaderPage>
       if (mounted && index == _chapter && generation == _contentGeneration) {
         _currentContent = content;
         _unfilteredContent = localized;
+        _syncRemoteReadingHistory();
         if (findMatch != null) _showFindMatch(findMatch);
         if (_restorePending case final saved?) {
           _restorePending = _resolveContentPosition(saved);
@@ -7352,7 +8154,15 @@ class _ReaderPageState extends State<ReaderPage>
         }
       }
       unawaited(
-        _prepareDisplayContent(index).then<void>((_) {
+        _prepareDisplayContent(index).then<void>((display) {
+          if (index == _chapter + 1 && display.content.illustrations.isNotEmpty) {
+            _prewarmOnlineIllustrations(
+              display.content,
+              generation: _contentGeneration,
+              limit: 3,
+              precacheCount: 1,
+            );
+          }
           if (mounted &&
               _paginated &&
               (index - _chapter).abs() == 1 &&
@@ -7362,6 +8172,83 @@ class _ReaderPageState extends State<ReaderPage>
         }, onError: (Object _) {}),
       );
     }
+  }
+
+  List<String> _orderedChapterIllustrations(
+    ReaderContent content, {
+    int fromParagraph = 0,
+    int? limit,
+  }) {
+    final order = content.readingOrder;
+    final count = order?.length ?? content.paragraphs.length;
+    var anchorRow = 0;
+    if (fromParagraph > 0) {
+      if (order != null) {
+        final idx = order.indexOf(fromParagraph);
+        if (idx >= 0) anchorRow = idx;
+      } else {
+        anchorRow = fromParagraph.clamp(0, count);
+      }
+    }
+    final ahead = <String>[];
+    final behind = <String>[];
+    void collect(int row, List<String> dest) {
+      final index = order?[row] ?? row;
+      final sbi = content.epubLayout?.blocks[index]?.sideBySideImageUrls;
+      if (sbi != null && sbi.length >= 2) {
+        for (final url in sbi) {
+          if (!url.startsWith('wenku-local:')) dest.add(url);
+        }
+        return;
+      }
+      final url = readerIllustrationUrl(content.paragraphs[index]);
+      if (url != null && !url.startsWith('wenku-local:')) {
+        dest.add(url);
+      }
+    }
+
+    for (var row = anchorRow; row < count; row++) {
+      collect(row, ahead);
+    }
+    for (var row = 0; row < anchorRow; row++) {
+      collect(row, behind);
+    }
+    final combined = [...ahead, ...behind];
+    if (limit != null && combined.length > limit) {
+      return combined.sublist(0, limit);
+    }
+    return combined;
+  }
+
+  void _prewarmOnlineIllustrations(
+    ReaderContent content, {
+    required int generation,
+    int fromParagraph = 0,
+    int? limit,
+    int precacheCount = 2,
+  }) {
+    if (!mounted || generation != _contentGeneration) return;
+    if (widget.repository case final OfflineNovelRepository offline
+        when offline.offline) {
+      return;
+    }
+    final urls = _orderedChapterIllustrations(
+      content,
+      fromParagraph: fromParagraph,
+      limit: limit,
+    );
+    if (urls.isEmpty) return;
+    final media = MediaQuery.maybeOf(context);
+    unawaited(
+      ReaderIllustrationCache.shared.prewarm(
+        urls,
+        maxConcurrent: 4,
+        active: () => mounted && generation == _contentGeneration,
+        viewportSize: media?.size,
+        devicePixelRatio: media?.devicePixelRatio ?? 1.0,
+        precacheCount: precacheCount,
+      ),
+    );
   }
 
   void _deferContentWarmup(int generation, ReaderContent content) {
@@ -7384,6 +8271,13 @@ class _ReaderPageState extends State<ReaderPage>
         WidgetsBinding.instance.addPostFrameCallback(afterFrame);
         return;
       }
+      _prewarmOnlineIllustrations(
+        content,
+        generation: generation,
+        fromParagraph: _paginated && _paged.ready
+            ? (_paged.anchor?.paragraph ?? 0)
+            : 0,
+      );
       _prefetchAdjacent();
       if (content.paragraphs.any((p) => p.trim() == '[插图]') &&
           widget.repository is OfflineNovelRepository) {
@@ -7551,6 +8445,11 @@ class _ReaderPageState extends State<ReaderPage>
       _content = Future.value((content: prepared.content, error: null));
       _paragraphCount = prepared.content.paragraphs.length;
     });
+    _syncRemoteReadingHistory();
+    _prewarmOnlineIllustrations(
+      prepared.content,
+      generation: _contentGeneration,
+    );
     _prefetchAdjacent();
     _saveWhenIdle();
   }
@@ -7908,7 +8807,10 @@ class _ReaderPageState extends State<ReaderPage>
       final scaledFontSize = MediaQuery.textScalerOf(
         context,
       ).scale(style.fontSize ?? 19);
-      final localLayout = LocalImageLayout.fromParagraph(paragraphs[index]);
+      final rawLayout = LocalImageLayout.fromParagraph(paragraphs[index]);
+      final localLayout = !sizedImage && blockStyle?.horizontalBleed != true
+          ? rawLayout.withoutContainerInset
+          : rawLayout;
       final sideBySide = blockStyle?.sideBySideImageUrls ?? const <String>[];
       final tapTargets = blockStyle?.imageTapTargets ?? const <String>[];
       if (blockStyle?.imageGallery == index) {
@@ -8375,6 +9277,12 @@ class _ReaderPageState extends State<ReaderPage>
       return;
     }
     final position = _currentPosition(includeParagraph: !duringLayout);
+    if (finalSave ||
+        (_chapter >= 0 &&
+            _chapter < _sourceBook.chapters.length &&
+            _lastSyncedRemoteHistory?.$1 != _sourceBook.chapters[_chapter].id)) {
+      _syncRemoteReadingHistory(position: position);
+    }
     unawaited(
       widget.state
           .savePosition(
@@ -9902,6 +10810,19 @@ class _ReaderPageState extends State<ReaderPage>
             final safe = MediaQuery.viewPaddingOf(context);
             final canOpenDetails =
                 widget.directEntry && widget.state.directReading;
+            final chapterSubtitle = _sourceBook.chapters.isEmpty
+                ? null
+                : () {
+                    final chTitle = _sourceBook.readingTitleFor(_chapter).trim();
+                    final volTitle =
+                        _sourceBook.chapters[_chapter].volumeTitle.trim();
+                    if (volTitle.isNotEmpty &&
+                        chTitle.isNotEmpty &&
+                        !chTitle.startsWith(volTitle)) {
+                      return '$volTitle · $chTitle';
+                    }
+                    return chTitle.isNotEmpty ? chTitle : null;
+                  }();
             return Padding(
               padding: EdgeInsets.fromLTRB(
                 16 + safe.left,
@@ -9939,17 +10860,44 @@ class _ReaderPageState extends State<ReaderPage>
                               key: const ValueKey('reader-title-details'),
                               onTap: canOpenDetails ? _bookDetails : null,
                               haptic: canOpenDetails ? HapticCue.action : null,
-                              child: AppText(
-                                _sourceBook.title,
-                                key: const ValueKey('reader-header-book-title'),
-                                textAlign: TextAlign.center,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
-                                  fontSize: 16,
-                                  height: 1.25,
-                                  fontWeight: FontWeight.w700,
-                                ),
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  AppText(
+                                    _sourceBook.title,
+                                    key: const ValueKey(
+                                      'reader-header-book-title',
+                                    ),
+                                    textAlign: TextAlign.center,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      fontSize: 15,
+                                      height: 1.2,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                  if (chapterSubtitle != null) ...[
+                                    const SizedBox(height: 1),
+                                    AppText(
+                                      chapterSubtitle,
+                                      key: const ValueKey(
+                                        'reader-header-chapter-title',
+                                      ),
+                                      textAlign: TextAlign.center,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(
+                                        fontSize: 11.5,
+                                        height: 1.2,
+                                        fontWeight: FontWeight.w500,
+                                        color: Theme.of(
+                                          context,
+                                        ).colorScheme.onSurfaceVariant,
+                                      ),
+                                    ),
+                                  ],
+                                ],
                               ),
                             ),
                           ),
@@ -10852,21 +11800,301 @@ class _ReaderPageState extends State<ReaderPage>
     ),
   );
 
-  Widget _scrollFailure(Object? error, VoidCallback retry) => Column(
-    mainAxisSize: MainAxisSize.min,
-    children: [
-      AppText(error is FormatException ? error.message : '章节加载失败'),
-      if (error case final LocalTextReferenceFailure failure)
-        if (widget.repository case final OfflineNovelRepository repo
-            when repo.local != null)
-          LocalTextRecovery(
-            books: repo.local!,
-            bookId: failure.bookId,
-            onChanged: retry,
+  void _syncRemoteReadingHistory({ReadingPosition? position}) {
+    final account = _onlineFeatures?.account;
+    if (account == null ||
+        !account.authenticated ||
+        isLocalBook(widget.novel.id) ||
+        widget.novel.id <= 0 ||
+        _currentContent == null ||
+        _chapter < 0 ||
+        _chapter >= _sourceBook.chapters.length) {
+      return;
+    }
+    final chapter = _sourceBook.chapters[_chapter];
+    if (chapter.id <= 0) return;
+    final fraction = (position?.fraction ?? _restorePending?.fraction ?? 0.0)
+        .clamp(0.0, 1.0);
+    final progressPercent = (fraction * 100).round().clamp(0, 100);
+    final rawPosition =
+        position?.paragraphIndex ??
+        position?.offset.round() ??
+        _restorePending?.paragraphIndex ??
+        0;
+    final lastPosition = rawPosition < 0 ? 0 : rawPosition;
+    final key = (chapter.id, progressPercent, lastPosition);
+    if (_lastSyncedRemoteHistory == key) return;
+    _lastSyncedRemoteHistory = key;
+    final finished =
+        _chapter == _sourceBook.chapters.length - 1 &&
+        (progressPercent >= 95 || _completionPending);
+    unawaited(
+      account.saveReadingHistory(
+        bookId: widget.novel.id,
+        volumeId: chapter.volumeId > 0 ? chapter.volumeId : null,
+        chapterId: chapter.id,
+        progressPercent: progressPercent,
+        lastPosition: lastPosition,
+        finished: finished,
+      ),
+    );
+  }
+
+  void _markChapterUnlocked(int chapterIndex, int chapterId) {
+    if (chapterIndex >= 0 && chapterIndex < _readerBook.chapters.length) {
+      final current = _readerBook.chapters[chapterIndex];
+      if (current.id == chapterId) {
+        final updated = List<NovelChapter>.of(_readerBook.chapters);
+        updated[chapterIndex] = NovelChapter(
+          current.title,
+          current.content,
+          id: current.id,
+          volumeId: current.volumeId,
+          volumeTitle: current.volumeTitle,
+          isLocked: false,
+          coinPrice: 0,
+        );
+        _readerBook = _readerBook.withChapters(updated);
+      }
+    }
+    _preparedContent.remove(chapterIndex);
+    _preparedDisplay.remove(chapterIndex);
+    _automaticContent.remove(chapterIndex);
+  }
+
+  void _invalidateLightNovelRepositories(OnlineFeatures features) {
+    features.repository.invalidateAuthDependentCaches();
+    final repo = widget.repository;
+    if (repo is LightNovelRepository && !identical(repo, features.repository)) {
+      repo.invalidateAuthDependentCaches();
+    } else if (repo is OfflineNovelRepository &&
+        repo.remote is LightNovelRepository &&
+        !identical(repo.remote, features.repository)) {
+      (repo.remote as LightNovelRepository).invalidateAuthDependentCaches();
+    }
+  }
+
+  Future<void> _openLoginAndRetry(
+    OnlineFeatures features,
+    VoidCallback retry,
+  ) async {
+    await pushNovelPage<void>(
+      context,
+      OnlineAccountPage(
+        account: features.account,
+        state: widget.state,
+        repository: widget.repository,
+      ),
+      reduceMotion: widget.state.reduceMotion,
+    );
+    if (!mounted || !features.account.authenticated) return;
+    _preparedContent.clear();
+    _preparedDisplay.clear();
+    _automaticContent.clear();
+    _invalidateLightNovelRepositories(features);
+    retry();
+  }
+
+  Future<void> _unlockChapter(
+    OnlineFeatures features,
+    int chapterIndex,
+    int chapterId,
+    VoidCallback retry,
+  ) async {
+    if (_unlockingChapterIds.contains(chapterId)) return;
+    setState(() => _unlockingChapterIds.add(chapterId));
+    try {
+      await features.account.unlockChapter(chapterId);
+      if (!mounted) return;
+      _markChapterUnlocked(chapterIndex, chapterId);
+      _invalidateLightNovelRepositories(features);
+      retry();
+    } catch (error) {
+      if (!mounted) return;
+      final message = error is LightNovelApiError
+          ? error.message
+          : LightNovelAccount.describeError(
+              error,
+              errorCode: features.account.errorCode,
+              errorMessage: features.account.errorMessage,
+            );
+      showNovelFeedback(context, message);
+    } finally {
+      if (mounted) {
+        setState(() => _unlockingChapterIds.remove(chapterId));
+      }
+    }
+  }
+
+  Widget _scrollFailure(
+    Object? error,
+    VoidCallback retry, {
+    required int chapterIndex,
+  }) {
+    final features = !isLocalBook(widget.novel.id)
+        ? (_onlineFeatures ?? OnlineFeaturesScope.maybeOf(context))
+        : null;
+    if (error case final LockedChapterException failure) {
+      final preview = failure.preview?.trim() ?? '';
+      final chapter =
+          chapterIndex >= 0 && chapterIndex < _sourceBook.chapters.length
+          ? _sourceBook.chapters[chapterIndex]
+          : null;
+      final targetChapterId = chapter != null && chapter.id > 0
+          ? chapter.id
+          : (failure is LightNovelLockedChapterException
+                ? failure.chapterId
+                : 0);
+      final braveRequired =
+          failure is LightNovelLockedChapterException && failure.braveRequired;
+      final coinUnlockable =
+          failure.coinPrice > 0 ||
+          (failure is LightNovelLockedChapterException &&
+              failure.accessType == 'coin');
+      final unlocking =
+          targetChapterId > 0 &&
+          _unlockingChapterIds.contains(targetChapterId);
+      final secondary = Theme.of(context).colorScheme.onSurfaceVariant;
+      final currentChapter = chapterIndex == _chapter;
+      String scopedKey(String base) =>
+          currentChapter ? base : '$base-$chapterIndex';
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (preview.isNotEmpty) ...[
+            AppText(
+              preview,
+              key: ValueKey(scopedKey('reader-locked-preview')),
+              style: TextStyle(fontSize: _fontSize, height: _lineHeight),
+            ),
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 20),
+              child: Divider(),
+            ),
+          ],
+          Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 460),
+              child: ContentPanel(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    ArchiveIcon(
+                      CupertinoIcons.lock_fill,
+                      size: 22,
+                      color: secondary,
+                    ),
+                    const SizedBox(height: 10),
+                    AppText(
+                      failure.message,
+                      key: ValueKey(scopedKey('reader-locked-message')),
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600,
+                        height: 1.5,
+                      ),
+                    ),
+                    if (features != null && !features.account.authenticated) ...[
+                      const SizedBox(height: 12),
+                      GlassTextButton(
+                        key: ValueKey(scopedKey('reader-login-to-unlock')),
+                        onPressed: () => _openLoginAndRetry(features, retry),
+                        child: const AppText('登录账号'),
+                      ),
+                    ] else if (braveRequired) ...[
+                      if (failure.message != '本章需要勇者权限才能阅读完整内容') ...[
+                        const SizedBox(height: 8),
+                        AppText(
+                          '本章需要勇者权限才能阅读完整内容',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: 13,
+                            height: 1.5,
+                            color: secondary,
+                          ),
+                        ),
+                      ],
+                    ] else if (features != null &&
+                        coinUnlockable &&
+                        targetChapterId > 0) ...[
+                      const SizedBox(height: 12),
+                      GlassTextButton(
+                        key: ValueKey(scopedKey('reader-unlock-chapter')),
+                        onPressed: unlocking
+                            ? null
+                            : () => _unlockChapter(
+                                features,
+                                chapterIndex,
+                                targetChapterId,
+                                retry,
+                              ),
+                        child: AppText(
+                          unlocking
+                              ? '正在解锁…'
+                              : '使用 ${failure.coinPrice > 0 ? '${failure.coinPrice} ' : ''}轻币解锁',
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 6),
+                    GlassTextButton(
+                      onPressed: retry,
+                      child: const AppText('重试'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
           ),
-      GlassTextButton(onPressed: retry, child: const AppText('重试')),
-    ],
-  );
+        ],
+      );
+    }
+    if (error case final OnlineAuthenticationRequired failure) {
+      final currentChapter = chapterIndex == _chapter;
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          AppText(failure.toString(), textAlign: TextAlign.center),
+          if (features != null && !features.account.authenticated) ...[
+            const SizedBox(height: 8),
+            GlassTextButton(
+              key: ValueKey(
+                currentChapter
+                    ? 'reader-login-to-unlock'
+                    : 'reader-login-to-unlock-$chapterIndex',
+              ),
+              onPressed: () => _openLoginAndRetry(features, retry),
+              child: const AppText('登录账号'),
+            ),
+          ],
+          GlassTextButton(onPressed: retry, child: const AppText('重试')),
+        ],
+      );
+    }
+    final message = switch (error) {
+      OnlineComponentUnavailable() => OnlineComponentUnavailable.message,
+      LightNovelApiError() => error.message,
+      LightNovelHttpException() => error.message,
+      FormatException() => error.message,
+      _ => '章节加载失败',
+    };
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        AppText(message, textAlign: TextAlign.center),
+        if (error case final LocalTextReferenceFailure failure)
+          if (widget.repository case final OfflineNovelRepository repo
+              when repo.local != null)
+            LocalTextRecovery(
+              books: repo.local!,
+              bookId: failure.bookId,
+              onChanged: retry,
+            ),
+        GlassTextButton(onPressed: retry, child: const AppText('重试')),
+      ],
+    );
+  }
 
   Widget _scrollParagraph(
     BuildContext context,
@@ -11078,7 +12306,12 @@ class _ReaderPageState extends State<ReaderPage>
                   controller: _scroll,
                   slivers: [
                     SliverToBoxAdapter(
-                      child: _scrollHeading(_chapter, prefs, dark),
+                      child: _scrollHeading(
+                        _chapter,
+                        prefs,
+                        dark,
+                        showTitle: !isLocalBook(widget.novel.id),
+                      ),
                     ),
                     SliverToBoxAdapter(
                       child: error == null
@@ -11088,11 +12321,20 @@ class _ReaderPageState extends State<ReaderPage>
                               ),
                               child: const ReaderSkeleton(),
                             )
-                          : _scrollFailure(
-                              error,
-                              () => setState(() {
-                                _content = _loadContent();
-                              }),
+                          : Padding(
+                              padding: const EdgeInsets.fromLTRB(
+                                24,
+                                12,
+                                24,
+                                128,
+                              ),
+                              child: _scrollFailure(
+                                error,
+                                () => setState(() {
+                                  _content = _loadContent();
+                                }),
+                                chapterIndex: _chapter,
+                              ),
                             ),
                     ),
                   ],
@@ -11142,7 +12384,7 @@ class _ReaderPageState extends State<ReaderPage>
                       vertical: 12,
                     ),
                     child: error != null
-                        ? _scrollFailure(error, retry)
+                        ? _scrollFailure(error, retry, chapterIndex: chapter)
                         : const SizedBox(
                             height: 72,
                             child: LoadingSkeleton(
@@ -11183,16 +12425,16 @@ class _ReaderPageState extends State<ReaderPage>
                         dark,
                         continuation: chapter != _scrollStream.originChapter,
                         showTitle:
+                            !isLocalBook(widget.novel.id) &&
                             data.content.epubLayout?.blocks[0]?.isHeading !=
                                 true &&
-                            (!isLocalBook(widget.novel.id) ||
-                                !readerHasLeadingChapterTitle(
-                                  data.content,
-                                  appText(
-                                    context,
-                                    _sourceBook.readingTitleFor(chapter),
-                                  ),
-                                )),
+                            !readerHasLeadingChapterTitle(
+                              data.content,
+                              appText(
+                                context,
+                                _sourceBook.readingTitleFor(chapter),
+                              ),
+                            ),
                       );
                     }
                     final count =

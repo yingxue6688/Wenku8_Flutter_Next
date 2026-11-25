@@ -1,6 +1,9 @@
 import 'package:xml/xml.dart';
 
 import 'catalog.dart';
+import 'feed_filter.dart';
+
+export 'feed_filter.dart';
 
 class PublicationLibrary {
   const PublicationLibrary(this.id, this.name);
@@ -30,6 +33,45 @@ abstract interface class PublicationCatalog {
     int page = 1,
     bool refresh = false,
   });
+}
+
+/// Optional repository capability for combined website-style feed filters
+/// (`sort`, `status_filter`, `category_filter`).
+abstract interface class FilteredNovelRepository {
+  Future<NovelPage> browseFiltered({
+    NovelSort sort = NovelSort.lastUpdate,
+    FeedFilter filter = const FeedFilter(),
+    int page = 1,
+    bool refresh = false,
+  });
+
+  Future<NovelPage> browsePublicationFiltered(
+    int libraryId, {
+    FeedFilter filter = const FeedFilter(),
+    int page = 1,
+    bool refresh = false,
+  });
+}
+
+/// Exposes cached or live per-section sub-filter metadata (sort, status,
+/// categories) matching LightNovel.fun website sections.
+abstract interface class SiteFeedFilterCatalog {
+  FeedFilterSchema? cachedFeedFilters({
+    NovelSort? sort,
+    PublicationLibrary? publication,
+  });
+
+  Future<FeedFilterSchema> loadFeedFilters({
+    NovelSort? sort,
+    PublicationLibrary? publication,
+  });
+}
+
+/// Exposes synchronously cached detail metadata and directory chapters so
+/// revisiting a known book renders immediately without blocking on reload.
+abstract interface class CachedBookPeekCatalog {
+  Novel? cachedDetail(int id);
+  List<NovelChapter>? cachedChapters(int id);
 }
 
 /// A category feed still uses the normal paging/prefetch/stale-result machinery.

@@ -10,6 +10,8 @@ import 'reader_content.dart';
 /// An online handoff contains identities and a source coordinate, never a body,
 /// image URL, login session or device-specific scroll geometry.
 class OnlineBookHandoff {
+  static const sourceId = 'lightnovel';
+
   const OnlineBookHandoff._({
     required this.book,
     required this.chapterTitle,
@@ -55,7 +57,7 @@ class OnlineBookHandoff {
     });
     _validateAnchor(content, normalized);
     return OnlineBookHandoff.fromJson({
-      'source': 'wenku8',
+      'source': sourceId,
       'bookId': book.id,
       'title': book.title,
       'chapterTitle': chapter.title,
@@ -73,7 +75,7 @@ class OnlineBookHandoff {
     final chapterTitle = raw['chapterTitle'];
     final coordinate = raw['position'];
     final digest = raw['contentDigest'];
-    if (raw['source'] != 'wenku8' ||
+    if (raw['source'] != sourceId ||
         id is! int ||
         id <= 0 ||
         isLocalBook(id) ||
@@ -135,7 +137,7 @@ class OnlineBookHandoff {
   }
 
   Map<String, Object> toJson() => {
-    'source': 'wenku8',
+    'source': sourceId,
     'bookId': book.id,
     'title': book.title,
     'chapterTitle': chapterTitle,
@@ -170,7 +172,7 @@ class OnlineBookHandoff {
     } on FormatException {
       rethrow;
     } catch (_) {
-      throw const FormatException('接收设备无法加载在线书，请检查本机的官网登录状态与网络后重试');
+      throw const FormatException('接收设备无法加载在线书，请检查本机的账号登录状态与网络后重试');
     }
     if (detailed.id != book.id) {
       throw const FormatException('两端书籍标识不一致，未更改阅读位置');
@@ -210,7 +212,7 @@ class OnlineBookHandoff {
     try {
       body = await repository.chapterContent(bookId, chapter);
     } catch (_) {
-      throw const FormatException('本机无法读取目标章节，请检查官网登录状态与网络后重试；已有缓存的章节可离线续读');
+      throw const FormatException('本机无法读取目标章节，请检查账号登录状态与网络后重试；已有缓存的章节可离线续读');
     }
     return ReaderContent.parse(body);
   }

@@ -101,7 +101,7 @@ class _CustomSpeechPageState extends State<CustomSpeechPage> {
       await cancel.wait(widget.controller.pause());
       final bytes = await cancel.wait(
         (widget.client ?? CustomSpeechClient()).synthesize(
-          '你好，欢迎来到轻小说文库。让故事陪伴每一次阅读。',
+          '你好，欢迎来到轻之国度。让故事陪伴每一次阅读。',
           draft,
           cancel,
         ),

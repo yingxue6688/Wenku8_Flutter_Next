@@ -3,9 +3,11 @@
     <cloud-backup>
         <exclude domain="root" path="app_webview" />
         <exclude domain="file" path="wenku8-offline-v1" />
+        <exclude domain="file" path="lightnovel-offline-v1" />
         <exclude domain="file" path="wenku8-illustrations-v1" />
         <exclude domain="sharedpref" path="wenku_account_session.xml" />
         <exclude domain="sharedpref" path="wenku_web_session.xml" />
+        <exclude domain="sharedpref" path="lightnovel_online_session.xml" />
         <exclude domain="sharedpref" path="wenku_official_identity.xml" />
         <exclude domain="sharedpref" path="book_scan_folders.xml" />
         <exclude domain="sharedpref" path="cloud_sources_secure.xml" />
@@ -15,9 +17,11 @@
     <device-transfer>
         <exclude domain="root" path="app_webview" />
         <exclude domain="file" path="wenku8-offline-v1" />
+        <exclude domain="file" path="lightnovel-offline-v1" />
         <exclude domain="file" path="wenku8-illustrations-v1" />
         <exclude domain="sharedpref" path="wenku_account_session.xml" />
         <exclude domain="sharedpref" path="wenku_web_session.xml" />
+        <exclude domain="sharedpref" path="lightnovel_online_session.xml" />
         <exclude domain="sharedpref" path="wenku_official_identity.xml" />
         <exclude domain="sharedpref" path="book_scan_folders.xml" />
         <exclude domain="sharedpref" path="cloud_sources_secure.xml" />

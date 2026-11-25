@@ -9,7 +9,8 @@ import 'book_search.dart';
 import 'tag_catalogue.dart';
 import 'blocked_tags.dart';
 import 'publication_catalog.dart';
-import 'web_publication_catalog.dart' show PublicationConnectionRequired;
+import 'online_component.dart';
+import 'lightnovel/lightnovel_client.dart';
 
 /// Owns page cursors, stale-result isolation and explicit recovery. A failed
 /// page never advances the cursor or loops automatically against the service.
@@ -62,6 +63,7 @@ class NovelFeedController extends ChangeNotifier {
   int _visibleResultStartIndex = 0;
   int _blockedItemCount = 0;
   NovelSort sort = NovelSort.lastUpdate;
+  FeedFilter filter = const FeedFilter();
   PublicationLibrary? _publication;
   PublicationCatalog? _publicationCatalog;
 
@@ -99,8 +101,26 @@ class NovelFeedController extends ChangeNotifier {
   Object? error;
   String get failureMessage {
     final failure = error;
-    if (failure is PublicationConnectionRequired) {
-      return '此出版文库需要官网账号连接，请到账号页确认后重试。';
+    if (failure is LightNovelApiError) {
+      return failure.message.isNotEmpty
+          ? failure.message
+          : '服务器未完成本次操作，请稍后重试。';
+    }
+    if (failure is OnlineAuthenticationRequired) {
+      return '请先登录轻之国度账号后重试。';
+    }
+    if (failure is OnlineComponentUnavailable) {
+      return OnlineComponentUnavailable.message;
+    }
+    if (failure is LightNovelHttpException) {
+      return switch (failure.statusCode) {
+        429 => '当前请求较多，请稍后重试；已保存的书籍与阅读记录仍保留。',
+        401 || 403 => '请先登录轻之国度账号后重试。',
+        _ =>
+          failure.message.isNotEmpty
+              ? failure.message
+              : '检查网络后重试，已保存的书籍与阅读记录仍保留。',
+      };
     }
     if (failure is FormatException && failure.message.toString().isNotEmpty) {
       return failure.message.toString();
@@ -207,9 +227,18 @@ class NovelFeedController extends ChangeNotifier {
       ? Future.value()
       : _load(replace: page == 0 || refreshFailed, force: true);
 
-  Future<void> selectSort(NovelSort value) async {
-    if (sort == value && tags.isEmpty && _publication == null) return;
+  Future<void> selectSort(
+    NovelSort value, {
+    FeedFilter filter = const FeedFilter(),
+  }) async {
+    if (sort == value &&
+        this.filter == filter &&
+        tags.isEmpty &&
+        _publication == null) {
+      return;
+    }
     sort = value;
+    this.filter = filter;
     tags = const [];
     _publication = null;
     _publicationCatalog = null;
@@ -219,8 +248,11 @@ class NovelFeedController extends ChangeNotifier {
 
   Future<void> selectTags(Iterable<String> values) async {
     final next = tagSearchTerms(values.join(' '));
-    if (listEquals(tags, next) && _publication == null) return;
+    if (listEquals(tags, next) && _publication == null && filter.isDefault) {
+      return;
+    }
     tags = List.unmodifiable(next);
+    filter = const FeedFilter();
     _publication = null;
     _publicationCatalog = null;
     _reset();
@@ -232,16 +264,19 @@ class NovelFeedController extends ChangeNotifier {
   Future<void> selectPublication(
     PublicationLibrary value, {
     required PublicationCatalog catalog,
+    FeedFilter filter = const FeedFilter(),
     bool force = false,
   }) async {
     if (_disposed || search) return;
     if (!force &&
         _publication?.id == value.id &&
+        this.filter == filter &&
         identical(_publicationCatalog, catalog)) {
       return;
     }
     _publication = value;
     _publicationCatalog = catalog;
+    this.filter = filter;
     tags = const [];
     _reset();
     await _load(replace: true, force: force);
@@ -345,6 +380,7 @@ class NovelFeedController extends ChangeNotifier {
     var requestedPage = replace ? 1 : page + 1;
     var replacing = replace;
     final requestedSort = sort;
+    final requestedFilter = filter;
     final requestedPublication = _publication;
     final publicationCatalog = _publicationCatalog;
     final filteringTags = !search && tags.isNotEmpty;
@@ -397,11 +433,29 @@ class NovelFeedController extends ChangeNotifier {
                 requestedQuery.trim().startsWith('#');
         final result =
             requestedPublication != null && publicationCatalog != null
-            ? await publicationCatalog.browsePublication(
-                requestedPublication.id,
-                page: requestedPage,
-                refresh: force,
-              )
+            ? !requestedFilter.isDefault &&
+                      publicationCatalog is FilteredNovelRepository
+                  ? await (publicationCatalog as FilteredNovelRepository)
+                        .browsePublicationFiltered(
+                          requestedPublication.id,
+                          filter: requestedFilter,
+                          page: requestedPage,
+                          refresh: force,
+                        )
+                  : !requestedFilter.isDefault &&
+                        repository is FilteredNovelRepository
+                  ? await (repository as FilteredNovelRepository)
+                        .browsePublicationFiltered(
+                          requestedPublication.id,
+                          filter: requestedFilter,
+                          page: requestedPage,
+                          refresh: force,
+                        )
+                  : await publicationCatalog.browsePublication(
+                      requestedPublication.id,
+                      page: requestedPage,
+                      refresh: force,
+                    )
             : (search || filteringTags) &&
                   tagOnly &&
                   repository is ProgressiveTagCatalogue
@@ -416,6 +470,14 @@ class NovelFeedController extends ChangeNotifier {
             ? await repository.searchFilteredPage(
                 requestedQuery,
                 field: requestedField,
+                page: requestedPage,
+                refresh: force,
+              )
+            : !requestedFilter.isDefault &&
+                  repository is FilteredNovelRepository
+            ? await (repository as FilteredNovelRepository).browseFiltered(
+                sort: requestedSort,
+                filter: requestedFilter,
                 page: requestedPage,
                 refresh: force,
               )

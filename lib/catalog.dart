@@ -3,6 +3,16 @@ import 'book_search.dart';
 import 'book_navigation.dart';
 export 'book_navigation.dart';
 
+/// Strips synthetic legacy synopsis placeholders so books without an author
+/// blurb render cleanly empty across discovery cards and detail views.
+String cleanNovelSummary(String raw) {
+  final trimmed = raw.trim();
+  if (trimmed == '点击查看作品介绍与目录' || trimmed == '点击查看作品介绍与目录。') {
+    return '';
+  }
+  return trimmed;
+}
+
 /// A source-neutral book model shared by the Android legacy API and local tests.
 class Novel {
   const Novel({
@@ -18,6 +28,10 @@ class Novel {
     this.lastUpdate,
     this.chapterCount = 0,
     this.navigation,
+    this.illustrator,
+    this.rating,
+    this.wordCount,
+    this.badge,
   });
 
   final int id;
@@ -32,6 +46,10 @@ class Novel {
   final String? lastUpdate;
   final int chapterCount;
   final BookNavigation? navigation;
+  final String? illustrator;
+  final double? rating;
+  final int? wordCount;
+  final String? badge;
 
   /// Public directory rows can target any preserved reading section. A resource
   /// missing from the authored TOC remains reachable by normal page turns.
@@ -82,6 +100,8 @@ class Novel {
           id: entry.target.chapterId,
           volumeId: volumeId,
           volumeTitle: volumeTitle,
+          isLocked: chapter.isLocked,
+          coinPrice: chapter.coinPrice,
         ),
       );
     }
@@ -155,6 +175,10 @@ class Novel {
     lastUpdate: lastUpdate,
     chapterCount: chapterCount,
     navigation: navigation,
+    illustrator: illustrator,
+    rating: rating,
+    wordCount: wordCount,
+    badge: badge,
   );
 
   Novel withChapters(List<NovelChapter> items) => Novel(
@@ -170,6 +194,10 @@ class Novel {
     lastUpdate: lastUpdate,
     chapterCount: items.length,
     navigation: navigation,
+    illustrator: illustrator,
+    rating: rating,
+    wordCount: wordCount,
+    badge: badge,
   );
 
   Map<String, Object?> toSnapshot() => {
@@ -184,6 +212,10 @@ class Novel {
     'lastUpdate': lastUpdate,
     'chapterCount': chapters.isNotEmpty ? chapters.length : chapterCount,
     if (navigation != null) 'navigation': navigation!.toJson(),
+    if (illustrator != null) 'illustrator': illustrator,
+    if (rating != null) 'rating': rating,
+    if (wordCount != null) 'wordCount': wordCount,
+    if (badge != null) 'badge': badge,
   };
 
   factory Novel.fromSnapshot(Map<String, dynamic> value) {
@@ -193,6 +225,8 @@ class Novel {
       throw const FormatException('书籍快照缺少标识或标题');
     }
     final colors = value['colors'];
+    final rawRating = value['rating'];
+    final rawWordCount = value['wordCount'];
     return Novel(
       id: id,
       title: title,
@@ -212,6 +246,14 @@ class Novel {
       navigation: value['navigation'] == null
           ? null
           : BookNavigation.fromJson(value['navigation']),
+      illustrator: value['illustrator'] is String
+          ? value['illustrator'] as String
+          : null,
+      rating: rawRating is num && rawRating.isFinite
+          ? rawRating.toDouble()
+          : null,
+      wordCount: rawWordCount is int && rawWordCount >= 0 ? rawWordCount : null,
+      badge: value['badge'] is String ? value['badge'] as String : null,
     );
   }
 }
@@ -235,6 +277,8 @@ class NovelChapter {
     this.id = 0,
     this.volumeId = 0,
     this.volumeTitle = '',
+    this.isLocked = false,
+    this.coinPrice = 0,
   });
 
   final String title;
@@ -242,6 +286,39 @@ class NovelChapter {
   final int id;
   final int volumeId;
   final String volumeTitle;
+  final bool isLocked;
+  final int coinPrice;
+}
+
+/// Sentinel marker placed in truncated/locked preview bodies so offline caches
+/// never persist them as complete chapters.
+const lockedChapterPreviewSentinel = '<!--locked-preview-->';
+
+/// Whether [text] is marked as a locked or truncated preview body.
+bool isLockedChapterPreview(String text) {
+  if (text.contains(lockedChapterPreviewSentinel)) return true;
+  final trimmed = text.trim();
+  return trimmed.startsWith('<!--locked-->') ||
+      trimmed.endsWith('<!--locked-->') ||
+      trimmed.startsWith('<!--preview-only-->') ||
+      trimmed.endsWith('<!--preview-only-->');
+}
+
+/// Thrown when an online chapter requires unlocking (e.g. coin-gated) or only
+/// offers a truncated preview that must not be persisted offline.
+class LockedChapterException implements Exception {
+  const LockedChapterException({
+    this.message = '本章为付费锁定章节，请登录或解锁后阅读',
+    this.coinPrice = 0,
+    this.preview,
+  });
+
+  final String message;
+  final int coinPrice;
+  final String? preview;
+
+  @override
+  String toString() => message;
 }
 
 /// Contiguous volume ranges keep the original, flat chapter indices stable.
@@ -351,16 +428,16 @@ bool sameNovelAuthor(String a, String b) {
 enum NovelSort {
   lastUpdate('最近更新', 'lastupdate'),
   postDate('最新入库', 'postdate'),
-  allVisit('总人气', 'allvisit'),
-  allVote('总推荐', 'allvote'),
-  monthVisit('月人气', 'monthvisit'),
-  monthVote('月推荐', 'monthvote'),
-  weekVisit('周人气', 'weekvisit'),
-  weekVote('周推荐', 'weekvote'),
-  dayVisit('日人气', 'dayvisit'),
-  dayVote('日推荐', 'dayvote'),
-  goodNum('收藏榜', 'goodnum'),
-  size('字数榜', 'size'),
+  allVisit('热门精选', 'allvisit'),
+  allVote('好书推荐', 'allvote'),
+  monthVisit('全站热榜', 'monthvisit'),
+  monthVote('今日热搜', 'monthvote'),
+  weekVisit('本周热门', 'weekvisit'),
+  weekVote('轻小说周榜', 'weekvote'),
+  dayVisit('今日热门', 'dayvisit'),
+  dayVote('轻小说日榜', 'dayvote'),
+  goodNum('每日新书', 'goodnum'),
+  size('字数排行', 'size'),
   fullFlag('完结作品', 'fullflag');
 
   const NovelSort(this.label, this.apiKey);

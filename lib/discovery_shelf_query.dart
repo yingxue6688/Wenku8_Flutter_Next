@@ -6,52 +6,66 @@ import 'catalog.dart';
 import 'novel_feed_controller.dart';
 import 'publication_catalog.dart';
 import 'tag_catalogue.dart';
-import 'web_publication_catalog.dart' show PublicationConnectionRequired;
 
 /// One remote discovery region owns one source and cursor. Ranking, tags and
-/// publication requests use the existing feed contract and never combine APIs.
+/// publication requests use the existing feed contract while carrying optional
+/// combined website feed filters (`sortKey`, `status_filter`, `category_filter`).
 class DiscoveryShelfQuery {
   const DiscoveryShelfQuery.defaults()
     : sort = NovelSort.lastUpdate,
       tags = const [],
-      publication = null;
+      publication = null,
+      filter = const FeedFilter();
 
   factory DiscoveryShelfQuery({
     NovelSort sort = NovelSort.lastUpdate,
     Iterable<String> tags = const [],
     PublicationLibrary? publication,
+    FeedFilter filter = const FeedFilter(),
   }) => DiscoveryShelfQuery._(
     sort,
     publication == null
         ? List.unmodifiable(tagSearchTerms(tags.join(' ')))
         : const [],
     publication,
+    filter,
   );
 
-  const DiscoveryShelfQuery._(this.sort, this.tags, this.publication);
+  const DiscoveryShelfQuery._(
+    this.sort,
+    this.tags,
+    this.publication,
+    this.filter,
+  );
 
   factory DiscoveryShelfQuery.fromFeed(NovelFeedController feed) =>
       DiscoveryShelfQuery(
         sort: feed.sort,
         tags: feed.tags,
         publication: feed.publication,
+        filter: feed.filter,
       );
 
   final NovelSort sort;
   final List<String> tags;
   final PublicationLibrary? publication;
+  final FeedFilter filter;
 
   String get label =>
       publication?.name ?? (tags.isEmpty ? sort.label : tags.join(' · '));
 
-  DiscoveryShelfQuery withSort(NovelSort value) =>
-      DiscoveryShelfQuery(sort: value);
+  DiscoveryShelfQuery withSort(
+    NovelSort value, {
+    FeedFilter filter = const FeedFilter(),
+  }) => DiscoveryShelfQuery(sort: value, filter: filter);
 
   DiscoveryShelfQuery withTags(Iterable<String> values) =>
       DiscoveryShelfQuery(sort: sort, tags: values);
 
-  DiscoveryShelfQuery withPublication(PublicationLibrary value) =>
-      DiscoveryShelfQuery(sort: sort, publication: value);
+  DiscoveryShelfQuery withPublication(
+    PublicationLibrary value, {
+    FeedFilter filter = const FeedFilter(),
+  }) => DiscoveryShelfQuery(sort: sort, publication: value, filter: filter);
 
   Map<String, Object> toJson() => {
     'version': 1,
@@ -59,6 +73,7 @@ class DiscoveryShelfQuery {
     'tags': tags,
     if (publication case final value?)
       'publication': {'id': value.id, 'name': value.name},
+    if (!filter.isDefault) 'filter': filter.toJson(),
   };
 
   String get record => jsonEncode(toJson());
@@ -97,10 +112,12 @@ class DiscoveryShelfQuery {
         (rawPublication['name'] as String).trim(),
       );
     }
+    final filter = FeedFilter.tryParse(value['filter']);
     return DiscoveryShelfQuery(
       sort: sort,
       tags: rawTags.cast<String>(),
       publication: publication,
+      filter: filter,
     );
   }
 
@@ -114,12 +131,12 @@ class DiscoveryShelfQuery {
     PublicationCatalog? publications,
   }) async {
     if (publication case final value?) {
-      if (publications == null) throw const PublicationConnectionRequired();
-      await feed.selectPublication(value, catalog: publications);
+      if (publications == null) throw StateError('频道目录暂不可用');
+      await feed.selectPublication(value, catalog: publications, filter: filter);
     } else if (tags.isNotEmpty) {
       await feed.selectTags(tags);
     } else {
-      await feed.selectSort(sort);
+      await feed.selectSort(sort, filter: filter);
     }
     if (!feed.hasLoaded && !feed.loading && feed.error == null) {
       await feed.loadInitial();
@@ -132,7 +149,8 @@ class DiscoveryShelfQuery {
       sort == other.sort &&
       listEquals(tags, other.tags) &&
       publication?.id == other.publication?.id &&
-      publication?.name == other.publication?.name;
+      publication?.name == other.publication?.name &&
+      filter == other.filter;
 
   @override
   int get hashCode => Object.hash(
@@ -140,5 +158,6 @@ class DiscoveryShelfQuery {
     Object.hashAll(tags),
     publication?.id,
     publication?.name,
+    filter,
   );
 }

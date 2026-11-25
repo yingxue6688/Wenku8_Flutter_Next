@@ -307,6 +307,9 @@ class ReaderBookmark {
 }
 
 class LibraryState extends ChangeNotifier {
+  static const onlineSourceSchemaKey = 'online_source_schema_v2';
+  static const onlineSourceSchemaValue = 'lightnovel';
+
   LibraryState(
     this._prefs, {
     UserFontStore? fonts,
@@ -315,6 +318,11 @@ class LibraryState extends ChangeNotifier {
   }) : fonts = fonts ?? UserFontStore(),
        palettePlatform = palettePlatform ?? const PalettePlatform(),
        backgrounds = backgrounds ?? ReaderBackgroundStore() {
+    final migration = _migrateOnlineSourceSchemaIfNeeded();
+    _migrationFuture = migration;
+    if (migration != null) {
+      _positionWrites = migration.catchError((Object _) {});
+    }
     final activity = _prefs.get(ReadingActivityStore.preferenceKey);
     try {
       readingActivity = ReadingActivityStore(
@@ -781,6 +789,7 @@ class LibraryState extends ChangeNotifier {
   final _bookReaderStyles = <int, ReaderBookStyle>{};
   int _metadataEncodes = 0;
   Future<void> _positionWrites = Future.value();
+  Future<void>? _migrationFuture;
   Completer<void>? _restoreBarrier;
   ThemeMode _theme = ThemeMode.system;
   double _fontSize = 19;
@@ -796,10 +805,69 @@ class LibraryState extends ChangeNotifier {
   bool _disposed = false;
   bool _historyNotificationQueued = false;
 
+  Future<void>? _migrateOnlineSourceSchemaIfNeeded() {
+    if (_prefs.get(onlineSourceSchemaKey) == onlineSourceSchemaValue) {
+      return null;
+    }
+    final pending = <Future<bool>>[];
+    void filterBookIdList(String key) {
+      if (!_prefs.containsKey(key)) return;
+      final raw = _prefs.get(key);
+      final existing = _preferenceStrings(raw).toList();
+      final kept = existing
+          .map(int.tryParse)
+          .whereType<int>()
+          .where(isLocalBook)
+          .map((id) => '$id')
+          .toList();
+      if (raw is! List || !listEquals(existing, kept)) {
+        pending.add(_prefs.setStringList(key, kept));
+      }
+    }
+
+    filterBookIdList('shelf');
+    filterBookIdList('reading_history_hidden');
+
+    const perBookPrefixes = [
+      'novel_meta_',
+      'chapter_',
+      'reading_position_',
+      'shelf_added_',
+      'reader_bookmarks_',
+      'illustration_layout_',
+      bookReaderStylePrefix,
+      'listening.language.v1.',
+    ];
+
+    for (final key in _prefs.getKeys()) {
+      if (key == 'discoveryShelfQuery' ||
+          key.startsWith('wenkuShelfSync.v1.') ||
+          key.startsWith('review_draft_')) {
+        pending.add(_prefs.remove(key));
+        continue;
+      }
+      for (final prefix in perBookPrefixes) {
+        if (key.startsWith(prefix)) {
+          final id = int.tryParse(key.substring(prefix.length));
+          if (id != null && id > 0 && !isLocalBook(id)) {
+            pending.add(_prefs.remove(key));
+          }
+          break;
+        }
+      }
+    }
+
+    pending.add(
+      _prefs.setString(onlineSourceSchemaKey, onlineSourceSchemaValue),
+    );
+    return Future.wait(pending).then((_) {});
+  }
+
   static Future<LibraryState> load() async {
     final prefs = await SharedPreferences.getInstance();
     await recoverLibraryRestore(prefs);
     final state = LibraryState(prefs);
+    await state._migrationFuture;
     final storedShelf = prefs.get('shelf');
     if (_preferenceStrings(
       storedShelf,
@@ -3411,11 +3479,14 @@ class LibraryState extends ChangeNotifier {
           : null;
       await _queuePositionWrite(() async {
         final records = backup.records;
+        final allowOnlineBooks =
+            backup.onlineSource == LibraryBackup.currentOnlineSource;
         final shelf = {
           ..._shelf,
-          ...(records['shelf'] as List<String>? ?? const [])
-              .map(int.parse)
-              .where((id) => !isLocalBook(id)),
+          if (allowOnlineBooks)
+            ...(records['shelf'] as List<String>? ?? const [])
+                .map(int.parse)
+                .where((id) => !isLocalBook(id)),
         };
         final added = {..._added};
         final known = {..._known};
@@ -3453,6 +3524,7 @@ class LibraryState extends ChangeNotifier {
           if (key.startsWith(bookReaderStylePrefix)) {
             if (importPreferences) {
               final id = int.parse(key.substring(bookReaderStylePrefix.length));
+              if (!allowOnlineBooks && !isLocalBook(id)) continue;
               bookStyles[id] = ReaderBookStyle.fromJson(
                 jsonDecode(entry.value as String),
               );
@@ -3465,24 +3537,28 @@ class LibraryState extends ChangeNotifier {
             }.toList()..sort();
           } else if (key.startsWith('novel_meta_')) {
             final id = int.parse(key.substring('novel_meta_'.length));
+            if (!allowOnlineBooks && !isLocalBook(id)) continue;
             if (!known.containsKey(id)) {
               known[id] = Novel.fromSnapshot(jsonDecode(entry.value as String));
               changed[key] = entry.value;
             }
           } else if (key.startsWith('shelf_added_')) {
             final id = int.parse(key.substring('shelf_added_'.length));
+            if (!allowOnlineBooks && !isLocalBook(id)) continue;
             if (!added.containsKey(id)) {
               added[id] = entry.value as int;
               changed[key] = entry.value;
             }
           } else if (key.startsWith('chapter_')) {
             final id = int.parse(key.substring('chapter_'.length));
+            if (!allowOnlineBooks && !isLocalBook(id)) continue;
             if (!chapters.containsKey(id) && !positions.containsKey(id)) {
               chapters[id] = entry.value as int;
               changed[key] = entry.value;
             }
           } else if (key.startsWith('reading_position_')) {
             final id = int.parse(key.substring('reading_position_'.length));
+            if (!allowOnlineBooks && !isLocalBook(id)) continue;
             final incoming = ReadingPosition.fromJson(
               jsonDecode(entry.value as String),
             );
@@ -3495,6 +3571,7 @@ class LibraryState extends ChangeNotifier {
             }
           } else if (key.startsWith('illustration_layout_')) {
             final id = int.parse(key.substring('illustration_layout_'.length));
+            if (!allowOnlineBooks && !isLocalBook(id)) continue;
             final values = {
               for (final item in illustrationsFor(id)) item.url: item,
             };
@@ -3515,6 +3592,7 @@ class LibraryState extends ChangeNotifier {
             );
           } else if (key.startsWith('reader_bookmarks_')) {
             final id = int.parse(key.substring('reader_bookmarks_'.length));
+            if (!allowOnlineBooks && !isLocalBook(id)) continue;
             final current = marks.putIfAbsent(id, () => []);
             final fingerprints = <String, List<int>>{};
             final byIds = <String, int>{};
@@ -3591,6 +3669,7 @@ class LibraryState extends ChangeNotifier {
         for (final id
             in (records['reading_history_hidden'] as List<String>? ?? const [])
                 .map(int.parse)) {
+          if (!allowOnlineBooks && !isLocalBook(id)) continue;
           if (!oldRead.contains(id) &&
               (positions.containsKey(id) || chapters.containsKey(id))) {
             hidden.add(id);
@@ -3607,6 +3686,7 @@ class LibraryState extends ChangeNotifier {
         changed['recentSearches'] = searches;
         if (importPreferences) {
           for (final key in backupPreferenceKeys) {
+            if (!allowOnlineBooks && key == 'discoveryShelfQuery') continue;
             if (records[key] case final value?) {
               // Local layout joins the transaction below under its own queue.
               if (key != 'localShelfContent') changed[key] = value;
@@ -3793,8 +3873,11 @@ class LibraryState extends ChangeNotifier {
               value,
             );
           }
-          if (records['discoveryShelfQuery'] case final String value) {
-            _discoveryShelfQuery = DiscoveryShelfQuery.parseOrDefault(value);
+          if (allowOnlineBooks &&
+              records['discoveryShelfQuery'] is String) {
+            _discoveryShelfQuery = DiscoveryShelfQuery.parseOrDefault(
+              records['discoveryShelfQuery'] as String,
+            );
             _hasDiscoveryShelfQuery = true;
           }
           if (records['adaptWhenOffline'] case final bool value) {

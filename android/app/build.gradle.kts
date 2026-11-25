@@ -35,7 +35,7 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
-        manifestPlaceholders["wenkuAppLabel"] = "轻小说文库 Next"
+        manifestPlaceholders["wenkuAppLabel"] = "轻之国度 Next"
         // AGP otherwise builds upstream desktop utilities too, including the
         // DRM tool whose encryption code is intentionally disabled in this app.
         externalNativeBuild.cmake.targets.addAll(listOf("mobi", "wenku_mobi"))
@@ -61,7 +61,7 @@ android {
             proguardFile(file("document-import.pro"))
             if (readerPreview) {
                 applicationIdSuffix = ".reader_preview"
-                manifestPlaceholders["wenkuAppLabel"] = "轻小说文库 预览"
+                manifestPlaceholders["wenkuAppLabel"] = "轻之国度 预览"
             }
             // Local previews remain install-compatible. Public distributions
             // use an owner's untracked key.properties, never an embedded key.

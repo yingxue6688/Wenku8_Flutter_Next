@@ -1,52 +1,52 @@
 import 'dart:async';
 import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'library_state.dart';
-import 'network_status.dart';
-import 'wenku_account.dart';
 
-class CloudShelfPlan {
-  CloudShelfPlan({
-    required Set<int> local,
-    required Set<int> remote,
-    Set<int>? lastLocal,
-    Set<int>? lastCloud,
-  }) {
-    final added = lastLocal == null ? local : local.difference(lastLocal);
-    final removed = lastLocal?.difference(local) ?? <int>{};
-    target = {...remote, ...added}..removeAll(removed);
-    localAdded = target.difference(local);
-    localRemoved = local.intersection(lastCloud?.difference(remote) ?? {})
-      ..removeAll(added);
-  }
-  late final Set<int> target, localAdded, localRemoved;
-}
+import '../book_identity.dart';
+import '../library_state.dart';
+import '../network_status.dart';
+import 'lightnovel_account.dart';
 
-/// One owner for session-bound, two-way membership. Local imports, caches,
-/// reading progress and source files are never uploaded or removed here.
-class WenkuShelfSync extends ChangeNotifier with WidgetsBindingObserver {
-  WenkuShelfSync({
+export 'lightnovel_account.dart' show LightNovelShelfPlan;
+
+/// Session-bound, two-way cloud bookshelf synchronizer for LightNovel.fun.
+/// Local imports (`isLocalBook(id)`), caches, reading progress, and source
+/// files are never uploaded or removed here.
+class LightNovelShelfSync extends ChangeNotifier with WidgetsBindingObserver {
+  LightNovelShelfSync({
     required this.account,
     required this.library,
     required this.preferences,
     this.network,
   });
-  final WenkuAccount account;
+
+  final LightNovelAccount account;
   final LibraryState library;
   final SharedPreferences preferences;
   final NetworkStatus? network;
+
   bool syncing = false;
   String? error;
   int? syncedAt;
-  bool _disposed = false, _applying = false, _foreground = true, _again = false;
-  Timer? _timer, _poll;
+
+  bool _disposed = false;
+  bool _applying = false;
+  bool _foreground = true;
+  bool _again = false;
+  Timer? _timer;
+  Timer? _poll;
   int? _identity;
   Set<int> _observed = {};
   Set<int>? _cloudObserved;
+
   Set<int> get _local =>
-      library.shelf.where((id) => id > 0 && id < 0x60000000).toSet();
+      library.shelf.where((id) => id > 0 && !isLocalBook(id)).toSet();
+
+  static String preferenceKeyForUid(int uid) => 'lightnovelShelfSync.v1.$uid';
+
   void start() {
     _observed = _local;
     account.addListener(_accountChanged);
@@ -60,7 +60,7 @@ class WenkuShelfSync extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   void _accountChanged() {
-    final id = account.authenticated ? account.profile?.id : null;
+    final id = account.authenticated ? account.profile?.uid : null;
     if (_identity != id) {
       _identity = id;
       error = null;
@@ -68,7 +68,7 @@ class WenkuShelfSync extends ChangeNotifier with WidgetsBindingObserver {
       _cloudObserved = null;
       schedule();
     }
-    final cloud = account.cloudBooks?.map((book) => book.id).toSet();
+    final cloud = account.cloudBooks?.map((book) => book.bookId).toSet();
     if (cloud != null && !setEquals(cloud, _cloudObserved)) {
       _cloudObserved = cloud;
       if (!syncing && !account.busy) schedule();
@@ -122,15 +122,19 @@ class WenkuShelfSync extends ChangeNotifier with WidgetsBindingObserver {
       schedule();
       return;
     }
+
     _timer?.cancel();
     _timer = null;
     syncing = true;
     error = null;
     notifyListeners();
-    final uid = account.profile!.id, session = account.sessionRevision;
+
+    final uid = account.profile!.uid;
+    final session = account.sessionRevision;
     final local = _local;
     final revisions = library.shelfRevisions;
-    final key = 'wenkuShelfSync.v1.$uid';
+    final key = preferenceKeyForUid(uid);
+
     try {
       Set<int>? previous(String field) {
         final raw = preferences.getString(key);
@@ -141,7 +145,7 @@ class WenkuShelfSync extends ChangeNotifier with WidgetsBindingObserver {
         }
         return (map[field] as List)
             .whereType<int>()
-            .where((id) => id > 0 && id < 0x60000000)
+            .where((id) => id > 0 && !isLocalBook(id))
             .toSet();
       }
 
@@ -152,9 +156,10 @@ class WenkuShelfSync extends ChangeNotifier with WidgetsBindingObserver {
       );
       if (_disposed ||
           session != account.sessionRevision ||
-          uid != account.profile?.id) {
+          uid != account.profile?.uid) {
         return;
       }
+
       _applying = true;
       try {
         await library.applyCloudShelf(
@@ -165,6 +170,7 @@ class WenkuShelfSync extends ChangeNotifier with WidgetsBindingObserver {
       } finally {
         _applying = false;
       }
+
       if (_disposed || session != account.sessionRevision) return;
       final baseline = {...local, ...result.localAdded}
         ..removeAll(result.localRemoved);
@@ -180,7 +186,9 @@ class WenkuShelfSync extends ChangeNotifier with WidgetsBindingObserver {
       syncedAt = DateTime.now().millisecondsSinceEpoch;
       if (!setEquals(baseline, _local)) _again = true;
     } catch (failure) {
-      if (!_disposed) error = WenkuAccount.describeError(failure);
+      if (!_disposed) {
+        error = account.formatError(failure);
+      }
     } finally {
       syncing = false;
       if (!_disposed) {

@@ -606,11 +606,16 @@ Future<ReaderPagination?> paginateReader({
       previousEpubBlock = null;
       previousImage = false;
     }
+    final outerHorizontalMarginsStripped =
+        !nextVertical &&
+        ((pageMarginsInside && blockStyle?.horizontalBleed == true) ||
+            (!pageMarginsInside &&
+                (content.hasHorizontalBleed || content.imageOnly)));
     final publisherPreview =
         readerIllustrationUrl(text) != null &&
         ((blockStyle?.sideBySideImageUrls.length ?? 0) >= 2 ||
-            content.imageOnly &&
-                LocalImageLayout.fromParagraph(text).containerInset == '24px');
+            (outerHorizontalMarginsStripped &&
+                LocalImageLayout.fromParagraph(text).containerInset == '24px'));
     // Percentage plate spacing belongs to the preview container, whose fixed
     // paper gutters have already been removed from the image's width.
     final spacingWidth = publisherPreview
@@ -811,7 +816,11 @@ Future<ReaderPagination?> paginateReader({
         imageSize = Size(sideBySideWidth, maxCellHeight);
       } else {
         final natural = localImageSizes[imageUrl]!;
-        imageSize = LocalImageLayout.fromParagraph(text).resolve(
+        final rawLayout = LocalImageLayout.fromParagraph(text);
+        final effectiveLayout = outerHorizontalMarginsStripped
+            ? rawLayout
+            : rawLayout.withoutContainerInset;
+        imageSize = effectiveLayout.resolve(
           natural: natural,
           available: Size(availWidth, availHeight),
           fontSize: font,
@@ -864,8 +873,14 @@ Future<ReaderPagination?> paginateReader({
           firstFloatParagraph = true;
           return true;
         }
-        if (y + imageSize.height + captionReserve > size.height + .1 &&
-            fragments.isNotEmpty) {
+        final hasExistingImage = fragments.any((f) => f.image);
+        final crowdedStackedPlate =
+            hasExistingImage &&
+            (y + imageSize.height + captionReserve > size.height * 0.85 ||
+                (fragments.every((f) => f.image) && y >= size.height * 0.55));
+        if (fragments.isNotEmpty &&
+            (crowdedStackedPlate ||
+                y + imageSize.height + captionReserve > size.height + .1)) {
           flush();
         }
         addBlockFragment(

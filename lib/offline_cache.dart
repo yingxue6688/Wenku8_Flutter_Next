@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'catalog.dart';
+import 'online_media.dart' show normalizeOnlineImageKey;
 import 'ui_notifiers.dart';
 
 List<int> _encodeBody(String text) => utf8.encode(text);
@@ -83,9 +84,11 @@ class OfflineCacheStore extends ChangeNotifier {
   bool _loaded = false;
   bool get loaded => _loaded;
 
+  static const appDirectoryName = 'lightnovel-offline-v1';
+
   static Future<OfflineCacheStore> forApp() async {
     final support = await getApplicationSupportDirectory();
-    return OfflineCacheStore(Directory('${support.path}/wenku8-offline-v1'));
+    return OfflineCacheStore(Directory('${support.path}/$appDirectoryName'));
   }
 
   List<OfflineBook> get books => List.unmodifiable(_books.values);
@@ -109,9 +112,12 @@ class OfflineCacheStore extends ChangeNotifier {
 
   // The digest is a fixed-length filesystem key, not an integrity check. Images
   // live with their book, outside the transport's evictable viewing cache.
-  File _illustration(int id, String url) => File(
-    '${_folder(id).path}/images/${sha256.convert(utf8.encode(url))}.image',
-  );
+  File _illustration(int id, String url) {
+    final key = normalizeOnlineImageKey(url);
+    return File(
+      '${_folder(id).path}/images/${sha256.convert(utf8.encode(key))}.image',
+    );
+  }
 
   Future<Map<String, int>> _scanIllustrations(int id) async {
     final manifest = File('${_folder(id).path}/images.json');
@@ -130,9 +136,10 @@ class OfflineCacheStore extends ChangeNotifier {
       for (final entry in (data['images'] as Map<String, dynamic>).entries) {
         final size = entry.value;
         if (size is! int || size <= 0 || size > maxIllustrationBytes) continue;
-        final file = _illustration(id, entry.key);
+        final key = normalizeOnlineImageKey(entry.key);
+        final file = _illustration(id, key);
         if (await file.exists() && await file.length() == size) {
-          sizes[entry.key] = size;
+          sizes[key] = size;
         }
       }
       return Map.unmodifiable(sizes);
@@ -145,25 +152,27 @@ class OfflineCacheStore extends ChangeNotifier {
 
   Future<bool> hasIllustration(int id, String url) async {
     await load();
-    final size = _books[id]?.illustrationBytes[url];
+    final key = normalizeOnlineImageKey(url);
+    final size = _books[id]?.illustrationBytes[key];
     if (size == null) return false;
     try {
-      final file = _illustration(id, url);
+      final file = _illustration(id, key);
       return await file.exists() && await file.length() == size;
     } on FileSystemException {
       return false;
     }
   }
 
-  /// Reader lookups are indexed by URL; reopening a book needs no network call
-  /// and does not scan every cached book or decode all its illustrations.
+  /// Reader lookups are indexed by normalized URL; reopening a book needs no
+  /// network call and does not scan every cached book or decode all its images.
   Future<Uint8List?> readIllustration(String url) async {
     await load();
-    for (final id in _illustrationOwners[url]?.toList() ?? const <int>[]) {
-      if (!await hasIllustration(id, url)) continue;
+    final key = normalizeOnlineImageKey(url);
+    for (final id in _illustrationOwners[key]?.toList() ?? const <int>[]) {
+      if (!await hasIllustration(id, key)) continue;
       try {
-        final bytes = await _illustration(id, url).readAsBytes();
-        if (bytes.length == _books[id]?.illustrationBytes[url]) return bytes;
+        final bytes = await _illustration(id, key).readAsBytes();
+        if (bytes.length == _books[id]?.illustrationBytes[key]) return bytes;
       } on FileSystemException {
         // Another book may also own this image; deletion never causes a miss
         // for its remaining durable copy.
@@ -279,6 +288,11 @@ class OfflineCacheStore extends ChangeNotifier {
             volumeTitle: value['volumeTitle'] is String
                 ? value['volumeTitle'] as String
                 : '',
+            isLocked: value['isLocked'] == true,
+            coinPrice: value['coinPrice'] is int &&
+                    (value['coinPrice'] as int) > 0
+                ? value['coinPrice'] as int
+                : 0,
           ),
         );
       }
@@ -343,6 +357,8 @@ class OfflineCacheStore extends ChangeNotifier {
               if (chapter.volumeId != 0) 'volumeId': chapter.volumeId,
               if (chapter.volumeTitle.isNotEmpty)
                 'volumeTitle': chapter.volumeTitle,
+              if (chapter.isLocked) 'isLocked': true,
+              if (chapter.coinPrice > 0) 'coinPrice': chapter.coinPrice,
             },
         ],
       };
@@ -400,12 +416,13 @@ class OfflineCacheStore extends ChangeNotifier {
     if (bytes.isEmpty || bytes.length > maxIllustrationBytes) {
       throw const FormatException('插图超过本地缓存大小限制');
     }
+    final key = normalizeOnlineImageKey(url);
     await load();
     return _serialize(() async {
       if (!isCurrent(id, epoch)) return false;
       final previous = _books[id];
       if (previous == null) return false;
-      final updated = previous._withIllustration(url, bytes.length);
+      final updated = previous._withIllustration(key, bytes.length);
       final manifest = _encodeMetadata({
         'version': 1,
         'images': updated.illustrationBytes,
@@ -413,10 +430,10 @@ class OfflineCacheStore extends ChangeNotifier {
       if (manifest.length > 4 * 1024 * 1024) {
         throw const FormatException('插图目录超过本地缓存大小限制');
       }
-      await _atomicWrite(_illustration(id, url), bytes);
+      await _atomicWrite(_illustration(id, key), bytes);
       await _atomicWrite(File('${_folder(id).path}/images.json'), manifest);
       _books[id] = updated;
-      (_illustrationOwners[url] ??= {}).add(id);
+      (_illustrationOwners[key] ??= {}).add(id);
       _changed(id);
       return true;
     });

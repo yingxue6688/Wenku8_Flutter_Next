@@ -1606,7 +1606,7 @@ Future<_ImportedFile> _importOriginal(_ImportJob job) async {
       'encoding': text == null && job.decodedPath == null ? 'utf8' : 'decoded',
       'parser': options.inlineEpubImages ? 3 : 2,
       'imageSizing': 1,
-      if (isEpub) 'richLayout': 12,
+      if (isEpub) 'richLayout': 15,
       if (isEpub) 'richText': 2,
       if (isEpub) 'epubNavigation': 1,
       if (isEpub) 'publisherSpacing': 1,
@@ -2566,7 +2566,7 @@ class LocalBookStore extends ChangeNotifier
         // Its images still get natural-size rendering from their own headers.
       }
     }
-    if (_sources[base]?['richLayout'] != 12 && isEpub) {
+    if (_sources[base]?['richLayout'] != 15 && isEpub) {
       try {
         await _layoutUpgrades.putIfAbsent(base, () => _upgradeRichLayout(base));
         final upgradedFile = File(
@@ -2637,7 +2637,7 @@ class LocalBookStore extends ChangeNotifier
   Future<void> _upgradeRichLayout(int id) async {
     final work = _writes.catchError((Object _) {}).then((_) async {
       final source = _sources[id], book = _books[id];
-      if (source == null || book == null || source['richLayout'] == 12) return;
+      if (source == null || book == null || source['richLayout'] == 15) return;
       final upgraded = await _withOriginalInput(
         id,
         (original) => compute(
@@ -2758,7 +2758,7 @@ class LocalBookStore extends ChangeNotifier
       final currentSource = Map<String, dynamic>.from(
         record['source'] as Map? ?? source,
       );
-      final changedSource = {...currentSource, 'richLayout': 12, 'richText': 2};
+      final changedSource = {...currentSource, 'richLayout': 15, 'richText': 2};
       record['source'] = changedSource;
       if (upgraded.navigation != null && record['novel'] is Map) {
         final novelMap = Map<String, dynamic>.from(record['novel'] as Map);

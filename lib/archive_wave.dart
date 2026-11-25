@@ -490,7 +490,7 @@ class _ArchiveFileCarouselState extends State<ArchiveFileCarousel>
             : null;
         final colors = Theme.of(context).colorScheme;
         final muted = colors.onSurfaceVariant;
-        final summary = book.summary.trim();
+        final summary = cleanNovelSummary(book.summary);
         final scaler = MediaQuery.textScalerOf(context);
         return AnimatedSwitcher(
           key: const ValueKey('archive-shelf-information-switch'),

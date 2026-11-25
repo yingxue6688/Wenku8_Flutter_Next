@@ -9,10 +9,10 @@ class ReleaseSection {
 const releaseFreeNotice = '**本项目完全免费，请勿购买所谓付费版、激活码或解锁服务。**';
 const releaseSponsorLink = '☕ [请我喝杯咖啡 · 爱发电](https://afdian.com/a/mikufoxxx)';
 const releaseProjectNotice =
-    '本项目为第三方客户端，并非轻小说文库（Wenku8）官方应用，也不运营该站点。在线书目与内容来自轻小说文库，本地书籍由用户自行导入，安装包不附带小说文件。';
+    '本项目为第三方客户端，并非轻之国度（lightnovel.fun）官方应用，也不运营该站点。在线书目与内容来自轻之国度，本地书籍由用户自行导入，安装包不附带小说文件。';
 const releaseRightsNotice =
     '小说、封面和插图归各自权利人所有。请仅使用有权访问的内容，遵守来源网站规则，不得绕过访问限制、破解 DRM，或未经许可传播、出售内容。';
-const releaseReadingNotice = '**在线内容以轻小说文库开放状态为准，不提供因版权限制而停止开放的在线书籍阅读。**';
+const releaseReadingNotice = '**在线内容以轻之国度开放状态为准，不提供因版权限制而停止开放的在线书籍阅读。**';
 const releaseMaintenanceNotice = '项目以稳定维护为主，后续非必要不再发版。';
 const _interruption = '修复听书被通知等短暂打断后，可能无法恢复播放的问题。';
 const _cache = '修复本地书籍在线听书时，临时缓存被清理后可能出现“缓存失败”的问题。';

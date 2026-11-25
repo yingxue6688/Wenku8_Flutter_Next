@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
@@ -8,7 +9,7 @@ import 'package:flutter/services.dart';
 import 'app_ui.dart';
 import 'app_interactions.dart';
 import 'local_platform.dart';
-import 'legacy_transport.dart';
+import 'online_media.dart';
 import 'local_book_media.dart';
 import 'local_image_layout.dart';
 import 'gallery_save_button.dart';
@@ -205,14 +206,22 @@ class ReaderIllustrationCache {
   ReaderIllustrationCache({
     IllustrationRequest? request,
     this.offlineReader,
-    this.maxBytes = 16 * 1024 * 1024,
-  }) : _request = request ?? LegacyTransport.illustration;
+    Future<void> Function()? onClearDiskCache,
+    this.maxBytes = 48 * 1024 * 1024,
+  }) : _request = request ?? OnlineMedia.illustration,
+       onClearDiskCache =
+           onClearDiskCache ??
+           (request == null ? OnlineMedia.clearIllustrationCache : null);
   static final shared = ReaderIllustrationCache();
   final IllustrationRequest _request;
 
   /// The application binds its explicit book cache once at startup. Viewing
   /// cache eviction never deletes these durable, book-owned illustrations.
   Future<Uint8List?> Function(String url)? offlineReader;
+
+  /// Optional disk viewing cache clear hook (defaults to `OnlineMedia`'s disk
+  /// cache for the shared/default loader).
+  Future<void> Function()? onClearDiskCache;
   final int maxBytes;
   final _pending = <String, _IllustrationRead>{};
   final _cache = <String, ({Uint8List bytes, _IllustrationSource source})>{};
@@ -227,6 +236,7 @@ class ReaderIllustrationCache {
   int _bytes = 0;
   int _epoch = 0;
   int get encodedBytes => _bytes;
+  String _cacheKey(String url) => normalizeOnlineImageKey(url);
   int _revision(String url) =>
       url.startsWith('wenku-local:') ? LocalBookMedia.revisionOf(url) : 0;
   bool _current(String url, _IllustrationSource source) =>
@@ -234,19 +244,23 @@ class ReaderIllustrationCache {
       source.epoch == _epoch &&
       source.revision == _revision(url);
 
-  Uint8List? peek(String url) {
-    final cached = _cache[url];
+  ({Uint8List bytes, _IllustrationSource source})? _cachedEntry(String url) {
+    final key = _cacheKey(url);
+    final cached = _cache[key];
     if (cached == null) return null;
-    if (_current(url, cached.source)) return cached.bytes;
-    _cache.remove(url);
+    if (_current(url, cached.source)) return cached;
+    _cache.remove(key);
     _bytes -= cached.bytes.length;
     return null;
   }
 
+  Uint8List? peek(String url) => _cachedEntry(url)?.bytes;
+
   Size? sizeOf(String url) {
-    if (_dimensions[url] case final entry?) {
+    final key = _cacheKey(url);
+    if (_dimensions[key] case final entry?) {
       if (_current(url, entry.source)) return entry.size;
-      _dimensions.remove(url);
+      _dimensions.remove(key);
     }
     final bytes = peek(url);
     return bytes == null ? null : _sizes[bytes];
@@ -265,10 +279,11 @@ class ReaderIllustrationCache {
   ) async {
     final size = await _size(bytes);
     if (_current(url, source)) {
-      if (_dimensions.length >= 256 && !_dimensions.containsKey(url)) {
+      final key = _cacheKey(url);
+      if (_dimensions.length >= 256 && !_dimensions.containsKey(key)) {
         _dimensions.remove(_dimensions.keys.first);
       }
-      _dimensions[url] = (size: size, source: source);
+      _dimensions[key] = (size: size, source: source);
     }
     return size;
   }
@@ -362,19 +377,21 @@ class ReaderIllustrationCache {
   }();
 
   void evict(String url) {
-    _dimensions.remove(url)?.source.active = false;
-    final cached = _cache.remove(url);
+    final key = _cacheKey(url);
+    _dimensions.remove(key)?.source.active = false;
+    final cached = _cache.remove(key);
     if (cached != null) {
       cached.source.active = false;
       _bytes -= cached.bytes.length;
     }
-    _pending.remove(url)?.source.active = false;
+    _pending.remove(key)?.source.active = false;
   }
 
   _IllustrationRead? _pendingFor(String url) {
-    final request = _pending[url];
+    final key = _cacheKey(url);
+    final request = _pending[key];
     if (request == null || _current(url, request.source)) return request;
-    _pending.remove(url);
+    _pending.remove(key);
     return null;
   }
 
@@ -385,10 +402,11 @@ class ReaderIllustrationCache {
     Future<Uint8List>? input,
     bool retain = true,
   }) {
+    final key = _cacheKey(url);
     final bytes = peek(url);
-    final cached = bytes == null ? null : _cache.remove(url);
+    final cached = bytes == null ? null : _cache.remove(key);
     if (cached != null) {
-      _cache[url] = cached;
+      _cache[key] = cached;
       return (future: Future.value(cached.bytes), source: cached.source);
     }
     if (_pendingFor(url) case final request?) {
@@ -404,17 +422,26 @@ class ReaderIllustrationCache {
           return bytes;
         })
         .whenComplete(() {
-          if (identical(_pending[url]?.source, source)) {
+          if (identical(_pending[key]?.source, source)) {
             final bytes = received;
             if (source.retain && bytes != null) {
               _rememberBytes(url, bytes, source, allowEviction: true);
             }
-            _pending.remove(url);
+            _pending.remove(key);
           }
         });
     final request = (future: future, source: source);
-    _pending[url] = request;
+    _pending[key] = request;
     return request;
+  }
+
+  Future<Uint8List?> _readOffline(String url) async {
+    final reader = offlineReader;
+    if (reader == null) return null;
+    final normalized = _cacheKey(url);
+    final hit = await reader(normalized);
+    if (hit != null || normalized == url) return hit;
+    return reader(url);
   }
 
   Future<Uint8List> _receive(String url, Future<Uint8List>? input) async {
@@ -423,8 +450,8 @@ class ReaderIllustrationCache {
           ? await input
           : url.startsWith('wenku-local:')
           ? await LocalBookMedia.load(url)
-          : await offlineReader?.call(url) ?? await _request(url);
-      if (bytes.isEmpty || bytes.length > 8 * 1024 * 1024) {
+          : await _readOffline(url) ?? await _request(url);
+      if (bytes.isEmpty || bytes.length > 12 * 1024 * 1024) {
         throw const FormatException('插图大小无效');
       }
       return bytes;
@@ -440,15 +467,16 @@ class ReaderIllustrationCache {
     required bool allowEviction,
   }) {
     if (!_current(url, source) || bytes.length > maxBytes) return;
-    final existing = _cache[url];
+    final key = _cacheKey(url);
+    final existing = _cache[key];
     if (existing != null && identical(existing.bytes, bytes)) return;
     if (!allowEviction && _bytes + bytes.length > maxBytes) return;
-    final previous = _cache.remove(url);
+    final previous = _cache.remove(key);
     if (previous != null) _bytes -= previous.bytes.length;
     while (_bytes + bytes.length > maxBytes && _cache.isNotEmpty) {
       _bytes -= _cache.remove(_cache.keys.first)!.bytes.length;
     }
-    _cache[url] = (bytes: bytes, source: source);
+    _cache[key] = (bytes: bytes, source: source);
     _bytes += bytes.length;
   }
 
@@ -459,6 +487,15 @@ class ReaderIllustrationCache {
     _pending.clear();
     _dimensions.clear();
     _bytes = 0;
+  }
+
+  Future<void> clearDiskCache() async {
+    await onClearDiskCache?.call();
+  }
+
+  Future<void> clearAll() async {
+    clearMemory();
+    await clearDiskCache();
   }
 
   ResizeImage _decodeProvider(
@@ -521,6 +558,116 @@ class ReaderIllustrationCache {
         }
       }
     });
+  }
+
+  void _precacheDecodedFrame({
+    required String url,
+    required Uint8List bytes,
+    required _IllustrationSource source,
+    required Size naturalSize,
+    required Size viewportSize,
+    required double devicePixelRatio,
+  }) {
+    if (!_current(url, source) ||
+        viewportSize.width <= 0 ||
+        viewportSize.height <= 0 ||
+        devicePixelRatio <= 0) {
+      return;
+    }
+    final width = readerIllustrationDecodeWidth(
+      imageSize: naturalSize,
+      available: viewportSize,
+      devicePixelRatio: devicePixelRatio,
+    );
+    final provider = _decodeProvider(url, bytes, source, width);
+    final stream = provider.resolve(ImageConfiguration.empty);
+    late final ImageStreamListener listener;
+    listener = ImageStreamListener(
+      (ImageInfo info, bool synchronousCall) {
+        info.dispose();
+        stream.removeListener(listener);
+        if (_current(url, source)) {
+          _decoded(url, bytes, source, provider);
+        }
+      },
+      onError: (Object _, StackTrace? _) {
+        stream.removeListener(listener);
+      },
+    );
+    stream.addListener(listener);
+  }
+
+  /// Concurrently fetches and inspects header dimensions for chapter
+  /// illustrations so page turns display them without CDN stalls.
+  Future<void> prewarm(
+    Iterable<String> urls, {
+    int maxConcurrent = 4,
+    bool measureSize = true,
+    bool Function()? active,
+    Size? viewportSize,
+    double devicePixelRatio = 1.0,
+    int precacheCount = 2,
+  }) async {
+    final queue = <String>[];
+    final seen = <String>{};
+    for (final raw in urls) {
+      final trimmed = raw.trim();
+      if (trimmed.isEmpty) continue;
+      if (seen.add(_cacheKey(trimmed))) {
+        queue.add(trimmed);
+      }
+    }
+    if (queue.isEmpty) return;
+
+    final workerCount = maxConcurrent.clamp(1, queue.length);
+    var nextIndex = 0;
+    var precacheRemaining = precacheCount;
+
+    Future<void> worker() async {
+      while (true) {
+        if (active != null && !active()) return;
+        if (nextIndex >= queue.length) return;
+        final url = queue[nextIndex++];
+        try {
+          final entry = _cachedEntry(url);
+          final cachedSize = sizeOf(url);
+          final Uint8List bytes;
+          final _IllustrationSource source;
+          if (entry != null && cachedSize != null) {
+            bytes = entry.bytes;
+            source = entry.source;
+          } else {
+            final request = _requestFor(url);
+            bytes = await request.future;
+            source = request.source;
+            if (active != null && !active()) return;
+            if (measureSize) {
+              await _rememberSize(url, bytes, source);
+            }
+          }
+          if (viewportSize != null &&
+              precacheRemaining > 0 &&
+              (active == null || active())) {
+            final naturalSize = sizeOf(url);
+            if (naturalSize != null) {
+              precacheRemaining--;
+              _precacheDecodedFrame(
+                url: url,
+                bytes: bytes,
+                source: source,
+                naturalSize: naturalSize,
+                viewportSize: viewportSize,
+                devicePixelRatio: devicePixelRatio,
+              );
+            }
+          }
+        } catch (_) {
+          // Prewarming is opportunistic; widget mount retries interactively.
+        }
+      }
+    }
+
+    await Future.wait([for (var i = 0; i < workerCount; i++) worker()]);
   }
 }
 
@@ -691,7 +838,9 @@ class _ReaderIllustrationState extends State<ReaderIllustration> {
   }
 
   String _failureLabel(Object? error) {
-    final status = error is PlatformException && error.details is Map
+    final status = error is OnlineMediaHttpException
+        ? error.statusCode
+        : error is PlatformException && error.details is Map
         ? (error.details as Map)['httpStatus']
         : null;
     return switch (status) {
@@ -704,17 +853,18 @@ class _ReaderIllustrationState extends State<ReaderIllustration> {
 
   @override
   Widget build(BuildContext context) {
-    final cached = _cache.peek(widget.url), size = _cache.sizeOf(widget.url);
+    final cached = _cache._cachedEntry(widget.url);
+    final size = _cache.sizeOf(widget.url);
     return RepaintBoundary(
       child: FutureBuilder<_IllustrationImage>(
         key: ObjectKey(_future),
         future: _future,
         initialData: cached != null && size != null
             ? (
-                bytes: cached,
+                bytes: cached.bytes,
                 size: size,
                 error: null,
-                source: _cache._cache[widget.url]!.source,
+                source: cached.source,
               )
             : null,
         builder: (context, snapshot) {

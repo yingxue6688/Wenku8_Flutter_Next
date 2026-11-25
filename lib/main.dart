@@ -12,8 +12,12 @@ import 'app_window_insets.dart';
 import 'app_licenses.dart';
 import 'app_repository.dart';
 import 'catalog.dart';
-import 'legacy_wenku_repository.dart';
+import 'legacy_cover.dart';
 import 'library_state.dart';
+import 'lightnovel/lightnovel_account.dart';
+import 'lightnovel/lightnovel_client.dart';
+import 'lightnovel/lightnovel_repository.dart';
+import 'lightnovel/lightnovel_shelf_sync.dart';
 import 'local_platform.dart';
 import 'local_series_actions.dart';
 import 'listening/audio_output.dart';
@@ -25,6 +29,9 @@ import 'listening/widgets.dart';
 import 'native_effects.dart';
 import 'network_status.dart';
 import 'offline_repository.dart';
+import 'online_features.dart';
+import 'online_media.dart';
+import 'online_session_store.dart';
 import 'pages.dart';
 import 'performance_preferences.dart';
 import 'haptic_preferences.dart';
@@ -33,10 +40,6 @@ import 'updates/app_updates.dart';
 import 'updates/ios_update_platform.dart';
 import 'updates/harmony_update_platform.dart';
 import 'updates/update_page.dart';
-import 'wenku_account.dart';
-import 'wenku_features.dart';
-import 'wenku_shelf_sync.dart';
-import 'publication_catalog.dart';
 import 'lan_reading_sync.dart';
 import 'lan_handoff_widgets.dart';
 import 'reader_handoff_navigation.dart';
@@ -79,43 +82,58 @@ Future<void> main() async {
       WidgetsBinding.instance.platformDispatcher.platformBrightness,
   };
   SystemChrome.setSystemUIOverlayStyle(novelSystemUiStyle(brightness));
-  final WenkuAccount? account = LocalPlatform.fileActions
-      ? WenkuAccount()
-      : null;
-  final remote = LegacyWenkuRepository(
-    publicationRequest: account?.readPublication,
-    publicationSessionKey: account == null
-        ? null
-        : () => (
-            account.sessionRevision,
-            account.publicationRevision,
-            account.authenticated,
-          ),
-  );
-  final repository = LocalPlatform.fileActions
-      ? await openApplicationLibrary(remote: remote, network: network)
-      : const DemoNovelRepository();
-  if (repository is OfflineNovelRepository) {
+  late final NovelRepository repository;
+  late final OnlineFeatures? features;
+  if (LocalPlatform.fileActions) {
+    final sessionStore = PlatformOnlineSessionStore();
+    late final LightNovelAccount account;
+    late final LightNovelClient client = LightNovelClient(
+      securityKeyProvider: () => account.securityKey,
+      onUnauthorized: () => unawaited(account.handleSessionExpired()),
+    );
+    account = LightNovelAccount(
+      apiCall: client.post,
+      readSession: sessionStore.read,
+      writeSession: (payload) =>
+          payload == null ? sessionStore.clear() : sessionStore.write(payload),
+      downloadAvatar: OnlineMedia.illustration,
+      errorCode: (e) => e is LightNovelApiError ? e.code : null,
+      errorMessage: (e) => e is LightNovelApiError ? e.message : null,
+    );
+    final remote = LightNovelRepository(client: client);
+    LegacyCover.configure(urlResolver: remote.resolveCoverUrl);
+    var lastSessionRev = account.sessionRevision;
+    account.addListener(() {
+      if (account.sessionRevision != lastSessionRev) {
+        lastSessionRev = account.sessionRevision;
+        remote.invalidateAuthDependentCaches();
+      }
+    });
+    final offline = await openApplicationLibrary(
+      remote: remote,
+      network: network,
+    );
+    repository = offline;
     ReaderIllustrationCache.shared.offlineReader =
-        repository.cache.readIllustration;
+        offline.cache.readIllustration;
+    if (offline.local != null) {
+      await reconcileLocalSeries(offline.local!, state);
+    }
+    features = OnlineFeatures(
+      account: account,
+      publications: remote,
+      repository: remote,
+      shelfSync: LightNovelShelfSync(
+        account: account,
+        library: state,
+        preferences: await SharedPreferences.getInstance(),
+        network: network,
+      )..start(),
+    );
+  } else {
+    repository = const DemoNovelRepository();
+    features = null;
   }
-  if (repository is OfflineNovelRepository && repository.local != null) {
-    await reconcileLocalSeries(repository.local!, state);
-  }
-  final features = account != null
-      ? WenkuFeatures(
-          account: account,
-          // The authenticated novellist response already contains book metadata.
-          // Reuse its adapter, pagination and the existing account session.
-          publications: remote as PublicationCatalog,
-          shelfSync: WenkuShelfSync(
-            account: account,
-            library: state,
-            preferences: await SharedPreferences.getInstance(),
-            network: network,
-          )..start(),
-        )
-      : null;
   final customSpeech = LocalPlatform.listening ? CustomSpeechSettings() : null;
   await customSpeech?.load();
   final listening = LocalPlatform.listening
@@ -177,7 +195,7 @@ class NovelApp extends StatefulWidget {
 
   final LibraryState state;
   final NovelRepository repository;
-  final WenkuFeatures? features;
+  final OnlineFeatures? features;
   final ListeningController? listening;
   final AppUpdates? updates;
   final NetworkStatus? network;
@@ -188,7 +206,7 @@ class NovelApp extends StatefulWidget {
 class _NovelAppState extends State<NovelApp> with WidgetsBindingObserver {
   LibraryState get state => widget.state;
   NovelRepository get repository => widget.repository;
-  WenkuFeatures? get features => widget.features;
+  OnlineFeatures? get features => widget.features;
   ListeningController? get listening => widget.listening;
   AppUpdates? get updates => widget.updates;
   final _updateNavigation = AppUpdateNavigation();
@@ -680,7 +698,7 @@ class _NovelAppState extends State<NovelApp> with WidgetsBindingObserver {
         _lastTypeface = state.appFontId;
         return MaterialApp(
           navigatorKey: _navigator,
-          title: '轻小说文库',
+          title: '轻之国度',
           locale: state.language.locale ?? _systemLocale,
           supportedLocales: const [
             Locale('zh', 'CN'),
@@ -729,7 +747,7 @@ class _NovelAppState extends State<NovelApp> with WidgetsBindingObserver {
                             controller: listening,
                             child: LanSyncScope(
                               sync: _lanSync,
-                              child: WenkuFeaturesScope(
+                              child: OnlineFeaturesScope(
                                 features: features,
                                 child: ReaderHandoffScope(
                                   navigation: _readerHandoff,

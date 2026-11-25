@@ -91,11 +91,16 @@ bool isLibraryRecordKey(String key) =>
         int.parse(_recordKey.firstMatch(key)![2]!) <= 0x7fffffff);
 
 class LibraryBackup {
-  LibraryBackup._(this.createdAt, Map<String, Object> records)
-    : records = Map.unmodifiable(records);
+  LibraryBackup._(
+    this.createdAt,
+    Map<String, Object> records, {
+    this.onlineSource,
+  }) : records = Map.unmodifiable(records);
   static const maxBytes = 4 * 1024 * 1024;
+  static const currentOnlineSource = 'lightnovel';
   final int createdAt;
   final Map<String, Object> records;
+  final String? onlineSource;
   int get shelfCount => (records['shelf'] as List<String>? ?? const [])
       .where((id) => !isLocalBook(int.parse(id)))
       .length;
@@ -119,17 +124,24 @@ class LibraryBackup {
 
   static Future<LibraryBackup> parse(String text) =>
       compute(_decodeBackup, text);
-  static Future<LibraryBackup> fromRecords(Map<String, Object> records) =>
-      compute(_createBackup, records);
-  Future<String> encode() =>
-      compute(_encodeBackup, (createdAt: createdAt, records: records));
+  static Future<LibraryBackup> fromRecords(
+    Map<String, Object> records, {
+    String? onlineSource = currentOnlineSource,
+  }) => compute(_createBackup, (records: records, onlineSource: onlineSource));
+  Future<String> encode() => compute(
+    _encodeBackup,
+    (createdAt: createdAt, records: records, onlineSource: onlineSource),
+  );
 }
 
-String _encodeBackup(({int createdAt, Map<String, Object> records}) backup) {
+String _encodeBackup(
+  ({int createdAt, Map<String, Object> records, String? onlineSource}) backup,
+) {
   final text = jsonEncode({
     'format': 'wenku8-local-backup',
     'version': 1,
     'createdAt': backup.createdAt,
+    'onlineSource': ?backup.onlineSource,
     'records': backup.records,
   });
   if (utf8.encode(text).length > LibraryBackup.maxBytes) {
@@ -138,12 +150,29 @@ String _encodeBackup(({int createdAt, Map<String, Object> records}) backup) {
   return text;
 }
 
-LibraryBackup _createBackup(Map<String, Object> records) {
+String? _parseOnlineSource(Object? value) {
+  if (value == null) return null;
+  if (value is! String || value.length > 64) {
+    throw const FormatException('不是受支持的阅读记录备份文件');
+  }
+  final trimmed = value.trim();
+  return trimmed.isEmpty ? null : trimmed;
+}
+
+LibraryBackup _createBackup(
+  ({Map<String, Object> records, String? onlineSource}) input,
+) {
+  final source = _parseOnlineSource(input.onlineSource);
   final backup = LibraryBackup._(
     DateTime.now().millisecondsSinceEpoch,
-    _validateRecords(records),
+    _validateRecords(input.records),
+    onlineSource: source,
   );
-  _encodeBackup((createdAt: backup.createdAt, records: backup.records));
+  _encodeBackup((
+    createdAt: backup.createdAt,
+    records: backup.records,
+    onlineSource: backup.onlineSource,
+  ));
   return backup;
 }
 
@@ -159,11 +188,13 @@ LibraryBackup _decodeBackup(String text) {
       raw['createdAt'] is! int ||
       raw['createdAt'] < 0 ||
       raw['records'] is! Map) {
-    throw const FormatException('不是受支持的文库备份文件');
+    throw const FormatException('不是受支持的阅读记录备份文件');
   }
+  final onlineSource = _parseOnlineSource(raw['onlineSource']);
   return LibraryBackup._(
     raw['createdAt'],
     _validateRecords(Map<String, dynamic>.from(raw['records'])),
+    onlineSource: onlineSource,
   );
 }
 
